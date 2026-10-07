@@ -1,0 +1,1537 @@
+
+---
+
+📁 ساختار فایل‌های جدید
+
+```
+docs/
+├── index.html                    # 🔄 به‌روزرسانی می‌شود
+├── manifest.webmanifest          # ✨ جدید
+├── sw.js                         # ✨ جدید (Service Worker)
+├── offline.html                  # ✨ جدید
+├── .nojekyll
+└── assets/
+    ├── css/
+    │   ├── style.css
+    │   └── pwa.css               # ✨ جدید
+    ├── js/
+    │   ├── config.js
+    │   ├── i18n.js
+    │   ├── api.js
+    │   ├── ui.js
+    │   ├── app.js
+    │   └── pwa.js                # ✨ جدید
+    └── icons/
+        ├── icon.svg
+        ├── icon-72.png           # ✨ جدید
+        ├── icon-96.png           # ✨ جدید
+        ├── icon-128.png          # ✨ جدید
+        ├── icon-144.png          # ✨ جدید
+        ├── icon-152.png          # ✨ جدید
+        ├── icon-192.png          # ✨ جدید
+        ├── icon-384.png          # ✨ جدید
+        ├── icon-512.png          # ✨ جدید
+        ├── icon-maskable-192.png # ✨ جدید
+        ├── icon-maskable-512.png # ✨ جدید
+        ├── apple-touch-icon.png  # ✨ جدید (180×180)
+        └── screenshot-wide.png   # ✨ جدید (اختیاری)
+```
+
+---
+
+1️⃣ docs/manifest.webmanifest
+
+```json
+{
+  "id": "/APZ_WALLET/",
+  "name": "APZ Wallet — Release Dashboard",
+  "short_name": "APZ Wallet",
+  "description": "Official release dashboard for APZ Wallet. Lightweight • Secure • Open-Source. Built by Khalil Heyrani.",
+  "start_url": "./?utm_source=pwa&utm_medium=homescreen",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#05070a",
+  "theme_color": "#00ffcc",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["finance", "utilities", "developer"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "assets/icons/icon-72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-152.png",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "assets/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "assets/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "assets/icons/screenshot-mobile.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "APZ Wallet Dashboard — Mobile"
+    },
+    {
+      "src": "assets/icons/screenshot-wide.png",
+      "sizes": "1920x1080",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "APZ Wallet Dashboard — Desktop"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Latest Release",
+      "short_name": "Latest",
+      "description": "View the latest APZ Wallet release",
+      "url": "./?action=latest",
+      "icons": [
+        {
+          "src": "assets/icons/icon-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Release History",
+      "short_name": "History",
+      "description": "Browse all past releases",
+      "url": "./?action=history",
+      "icons": [
+        {
+          "src": "assets/icons/icon-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "GitHub Repository",
+      "short_name": "GitHub",
+      "description": "Open APZ Wallet on GitHub",
+      "url": "https://github.com/apzchain/APZ_WALLET",
+      "icons": [
+        {
+          "src": "assets/icons/icon-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    }
+  ],
+  "share_target": {
+    "action": "./share",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}
+```
+
+---
+
+2️⃣ docs/sw.js — Service Worker
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Service Worker
+   Strategy:
+     • App Shell → Cache First
+     • GitHub API → Network First (with cache fallback)
+     • Icons/Fonts → Stale-While-Revalidate
+   ═══════════════════════════════════════════════ */
+
+const VERSION = 'v1.0.0';
+const CACHE_PREFIX = 'apz-wallet';
+
+const CACHE_STATIC = `${CACHE_PREFIX}-static-${VERSION}`;
+const CACHE_RUNTIME = `${CACHE_PREFIX}-runtime-${VERSION}`;
+const CACHE_API = `${CACHE_PREFIX}-api-${VERSION}`;
+
+// منابع اصلی (App Shell)
+const STATIC_ASSETS = [
+  './',
+  './index.html',
+  './offline.html',
+  './manifest.webmanifest',
+  './assets/css/style.css',
+  './assets/css/pwa.css',
+  './assets/js/config.js',
+  './assets/js/i18n.js',
+  './assets/js/api.js',
+  './assets/js/ui.js',
+  './assets/js/app.js',
+  './assets/js/pwa.js',
+  './assets/icons/icon.svg',
+  './assets/icons/icon-192.png',
+  './assets/icons/icon-512.png'
+];
+
+// دامنه‌های مجاز API
+const API_HOSTS = ['api.github.com'];
+
+// ─── Install ───
+self.addEventListener('install', (event) => {
+  console.log('[SW] Installing', VERSION);
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(CACHE_STATIC);
+      // افزودن تک‌تک (تحمل خطا)
+      await Promise.all(
+        STATIC_ASSETS.map((url) =>
+          cache.add(url).catch((err) => {
+            console.warn('[SW] Failed to cache:', url, err);
+          })
+        )
+      );
+      // فعال‌سازی فوری
+      await self.skipWaiting();
+    })()
+  );
+});
+
+// ─── Activate ───
+self.addEventListener('activate', (event) => {
+  console.log('[SW] Activating', VERSION);
+  event.waitUntil(
+    (async () => {
+      // پاک‌سازی cacheهای قدیمی
+      const keys = await caches.keys();
+      await Promise.all(
+        keys
+          .filter((key) => key.startsWith(CACHE_PREFIX) && !key.endsWith(VERSION))
+          .map((key) => caches.delete(key))
+      );
+      // کنترل فوری تمام tabها
+      await self.clients.claim();
+    })()
+  );
+});
+
+// ─── Fetch ───
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  const url = new URL(request.url);
+
+  // نادیده گرفتن درخواست‌های غیر-GET
+  if (request.method !== 'GET') return;
+
+  // نادیده گرفتن chrome-extension:// و ...
+  if (!url.protocol.startsWith('http')) return;
+
+  // ─── API: Network First ───
+  if (API_HOSTS.includes(url.hostname)) {
+    event.respondWith(networkFirst(request, CACHE_API));
+    return;
+  }
+
+  // ─── Navigation: App Shell ───
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      (async () => {
+        try {
+          const fresh = await fetch(request);
+          const cache = await caches.open(CACHE_STATIC);
+          cache.put(request, fresh.clone());
+          return fresh;
+        } catch {
+          const cached = await caches.match(request);
+          return cached || caches.match('./offline.html');
+        }
+      })()
+    );
+    return;
+  }
+
+  // ─── Fonts/Icons/Images: Stale-While-Revalidate ───
+  if (['font', 'image'].includes(request.destination)) {
+    event.respondWith(staleWhileRevalidate(request, CACHE_RUNTIME));
+    return;
+  }
+
+  // ─── Default: Cache First ───
+  event.respondWith(cacheFirst(request, CACHE_STATIC));
+});
+
+// ─── Strategies ───
+async function cacheFirst(request, cacheName) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+
+  try {
+    const fresh = await fetch(request);
+    if (fresh.ok) {
+      const cache = await caches.open(cacheName);
+      cache.put(request, fresh.clone());
+    }
+    return fresh;
+  } catch (err) {
+    // اگر آفلاین بود و کش نداشتیم
+    const offline = await caches.match('./offline.html');
+    return offline || new Response('Offline', { status: 503 });
+  }
+}
+
+async function networkFirst(request, cacheName) {
+  try {
+    const fresh = await fetch(request);
+    if (fresh.ok) {
+      const cache = await caches.open(cacheName);
+      cache.put(request, fresh.clone());
+    }
+    return fresh;
+  } catch (err) {
+    const cached = await caches.match(request);
+    if (cached) return cached;
+    // پاسخ JSON خالی برای GitHub API در حالت آفلاین
+    return new Response(JSON.stringify({ offline: true, data: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+async function staleWhileRevalidate(request, cacheName) {
+  const cached = await caches.match(request);
+
+  const fetchPromise = fetch(request)
+    .then((fresh) => {
+      if (fresh.ok) {
+        caches.open(cacheName).then((cache) => cache.put(request, fresh.clone()));
+      }
+      return fresh;
+    })
+    .catch(() => cached);
+
+  return cached || fetchPromise;
+}
+
+// ─── Message Handler ───
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+  if (event.data?.type === 'CLEAR_CACHE') {
+    caches.keys().then((keys) =>
+      Promise.all(keys.map((key) => caches.delete(key)))
+    );
+  }
+});
+
+// ─── Push Notifications ───
+self.addEventListener('push', (event) => {
+  const data = event.data?.json() || {};
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'APZ Wallet', {
+      body: data.body || 'New release available!',
+      icon: './assets/icons/icon-192.png',
+      badge: './assets/icons/icon-96.png',
+      vibrate: [200, 100, 200],
+      tag: 'apz-release',
+      data: { url: data.url || './' }
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    clients.openWindow(event.notification.data.url || './')
+  );
+});
+```
+
+---
+
+3️⃣ docs/offline.html
+
+```html
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#05070a" />
+  <title>APZ Wallet — Offline</title>
+  <link rel="icon" type="image/svg+xml" href="assets/icons/icon.svg" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=Vazirmatn:wght@400;700;900&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: radial-gradient(ellipse at top, #0a0e14, #05070a);
+      color: #e6f1ff;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+    }
+    .offline-card {
+      max-width: 420px;
+      padding: 40px 28px;
+      background: rgba(15, 20, 28, 0.7);
+      border: 1px solid rgba(0, 255, 204, 0.15);
+      border-radius: 20px;
+      backdrop-filter: blur(12px);
+    }
+    .offline-icon {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 24px;
+      filter: drop-shadow(0 0 20px rgba(0, 255, 204, 0.5));
+    }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #00ffcc, #00b8ff);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      margin-bottom: 12px;
+    }
+    p {
+      color: #8892b0;
+      font-size: 0.95rem;
+      line-height: 1.7;
+      margin-bottom: 24px;
+    }
+    button {
+      background: linear-gradient(135deg, #00ffcc, #00b8ff);
+      color: #05070a;
+      border: none;
+      padding: 12px 28px;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      box-shadow: 0 4px 20px rgba(0, 255, 204, 0.3);
+      transition: 200ms;
+    }
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 28px rgba(0, 255, 204, 0.5);
+    }
+  </style>
+</head>
+<body>
+  <div class="offline-card">
+    <svg class="offline-icon" viewBox="0 0 24 24" fill="none" stroke="#00ffcc" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="2" y1="2" x2="22" y2="22" />
+      <path d="M8.5 16.5a5 5 0 017 0" />
+      <path d="M2 8.82a15 15 0 014.17-2.65" />
+      <path d="M10.66 5c4.01-.36 8.14.9 11.34 3.76" />
+      <path d="M16.85 11.25a10 10 0 012.22 1.68" />
+      <path d="M5 12.55a11 11 0 015.17-2.39" />
+      <line x1="12" y1="20" x2="12.01" y2="20" />
+    </svg>
+    <h1>You're Offline</h1>
+    <p>No internet connection detected.<br />Check your network and try again.</p>
+    <button onclick="location.reload()">Retry</button>
+  </div>
+</body>
+</html>
+```
+
+---
+
+4️⃣ docs/assets/css/pwa.css
+
+```css
+/* ═══════════════════════════════════════════════
+   APZ Wallet — PWA Styles
+   (Install prompt, offline banner, update toast)
+   ═══════════════════════════════════════════════ */
+
+/* ─── Install Banner ─── */
+.pwa-install-banner {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(150%);
+  width: calc(100% - 32px);
+  max-width: 480px;
+  z-index: 9999;
+  padding: 16px 18px;
+  background: rgba(10, 14, 20, 0.95);
+  border: 1px solid rgba(0, 255, 204, 0.3);
+  border-radius: 16px;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 24px rgba(0, 255, 204, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  transition: transform 400ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pwa-install-banner.show {
+  transform: translateX(-50%) translateY(0);
+}
+
+.pwa-install-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 10px rgba(0, 255, 204, 0.5));
+}
+
+.pwa-install-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.pwa-install-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #e6f1ff;
+  margin-bottom: 2px;
+}
+
+.pwa-install-sub {
+  font-size: 0.75rem;
+  color: #8892b0;
+}
+
+.pwa-install-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pwa-btn {
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  transition: 200ms;
+  white-space: nowrap;
+}
+
+.pwa-btn-install {
+  background: linear-gradient(135deg, #00ffcc, #00b8ff);
+  color: #05070a;
+  box-shadow: 0 4px 16px rgba(0, 255, 204, 0.3);
+}
+
+.pwa-btn-install:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 255, 204, 0.5);
+}
+
+.pwa-btn-dismiss {
+  background: transparent;
+  color: #8892b0;
+  border: 1px solid rgba(136, 146, 176, 0.2);
+}
+
+.pwa-btn-dismiss:hover {
+  color: #e6f1ff;
+  border-color: rgba(136, 146, 176, 0.4);
+}
+
+/* ─── iOS Install Guide (Modal) ─── */
+.pwa-ios-guide {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(5, 7, 10, 0.9);
+  backdrop-filter: blur(12px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fadeIn 300ms;
+}
+
+.pwa-ios-guide.show { display: flex; }
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.pwa-ios-guide-card {
+  max-width: 380px;
+  padding: 28px 24px;
+  background: rgba(15, 20, 28, 0.98);
+  border: 1px solid rgba(0, 255, 204, 0.25);
+  border-radius: 20px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+}
+
+.pwa-ios-guide-card h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #e6f1ff;
+  margin-bottom: 8px;
+}
+
+.pwa-ios-guide-card p {
+  color: #8892b0;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  margin-bottom: 20px;
+}
+
+.pwa-ios-guide-steps {
+  text-align: left;
+  margin-bottom: 20px;
+}
+
+.pwa-ios-guide-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  font-size: 0.85rem;
+  color: #e6f1ff;
+}
+
+.pwa-ios-guide-step svg {
+  flex-shrink: 0;
+  color: #00ffcc;
+}
+
+.pwa-ios-guide-close {
+  background: linear-gradient(135deg, #00ffcc, #00b8ff);
+  color: #05070a;
+  border: none;
+  padding: 10px 24px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+
+[dir="rtl"] .pwa-ios-guide-steps { text-align: right; }
+[dir="rtl"] .pwa-ios-guide-step { flex-direction: row-reverse; }
+
+/* ─── Update Toast ─── */
+.pwa-update-toast {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-200%);
+  z-index: 9999;
+  padding: 12px 20px;
+  background: rgba(10, 14, 20, 0.95);
+  border: 1px solid rgba(0, 184, 255, 0.4);
+  border-radius: 12px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.85rem;
+  color: #e6f1ff;
+  transition: transform 400ms cubic-bezier(0.4, 0, 0.2, 1);
+  max-width: calc(100% - 32px);
+}
+
+.pwa-update-toast.show {
+  transform: translateX(-50%) translateY(0);
+}
+
+.pwa-update-toast button {
+  background: linear-gradient(135deg, #00ffcc, #00b8ff);
+  color: #05070a;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* ─── Offline Banner ─── */
+.pwa-offline-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9998;
+  padding: 8px 16px;
+  background: linear-gradient(90deg, rgba(255, 56, 96, 0.9), rgba(255, 193, 7, 0.9));
+  color: #05070a;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: center;
+  transform: translateY(-100%);
+  transition: transform 300ms;
+}
+
+.pwa-offline-banner.show {
+  transform: translateY(0);
+}
+
+/* ─── Standalone Mode Adjustments ─── */
+@media (display-mode: standalone) {
+  .pwa-install-banner { display: none !important; }
+  body { padding-top: env(safe-area-inset-top); }
+  .footer { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 480px) {
+  .pwa-install-banner {
+    flex-wrap: wrap;
+    padding: 14px;
+  }
+
+  .pwa-install-actions {
+    width: 100%;
+    justify-content: flex-end;
+    margin-top: 10px;
+  }
+}
+```
+
+---
+
+5️⃣ docs/assets/js/pwa.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — PWA Bootstrap
+   Handles: SW registration, install prompt, updates
+   ═══════════════════════════════════════════════ */
+
+(function () {
+  'use strict';
+
+  // ─── Configuration ───
+  const SW_URL = './sw.js';
+  const SW_SCOPE = './';
+  const INSTALL_DISMISSED_KEY = 'apz-pwa-install-dismissed';
+  const INSTALL_DISMISS_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 روز
+
+  // ─── State ───
+  let deferredPrompt = null;
+  let registration = null;
+  let isInstalled = false;
+
+  // ─── Detect Standalone ───
+  function isStandalone() {
+    return (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.matchMedia('(display-mode: minimal-ui)').matches ||
+      window.matchMedia('(display-mode: window-controls-overlay)').matches ||
+      window.navigator.standalone === true
+    );
+  }
+
+  // ─── Detect iOS ───
+  function isIOS() {
+    return (
+      /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream
+    );
+  }
+
+  function isIOSSafari() {
+    return isIOS() && /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent);
+  }
+
+  // ─── Should Show Install Banner ───
+  function shouldShowInstallBanner() {
+    if (isStandalone()) return false;
+
+    const dismissed = localStorage.getItem(INSTALL_DISMISSED_KEY);
+    if (dismissed && Date.now() - Number(dismissed) < INSTALL_DISMISS_DURATION) {
+      return false;
+    }
+    return true;
+  }
+
+  // ─── Create Install Banner ───
+  function createInstallBanner() {
+    if (document.getElementById('pwa-install-banner')) return;
+
+    const banner = document.createElement('div');
+    banner.id = 'pwa-install-banner';
+    banner.className = 'pwa-install-banner';
+    banner.setAttribute('role', 'dialog');
+    banner.setAttribute('aria-label', 'Install APZ Wallet');
+
+    banner.innerHTML = `
+      <img src="assets/icons/icon-192.png" alt="" class="pwa-install-icon" />
+      <div class="pwa-install-text">
+        <div class="pwa-install-title" data-pwa-i18n="title">Install APZ Wallet</div>
+        <div class="pwa-install-sub" data-pwa-i18n="sub">Add to home screen for offline access</div>
+      </div>
+      <div class="pwa-install-actions">
+        <button class="pwa-btn pwa-btn-dismiss" id="pwa-dismiss" data-pwa-i18n="later">Later</button>
+        <button class="pwa-btn pwa-btn-install" id="pwa-install" data-pwa-i18n="install">Install</button>
+      </div>
+    `;
+
+    document.body.appendChild(banner);
+
+    // Apply i18n
+    applyPwaI18n(banner);
+
+    // Slide in
+    requestAnimationFrame(() => {
+      setTimeout(() => banner.classList.add('show'), 100);
+    });
+
+    // Handlers
+    document.getElementById('pwa-dismiss').addEventListener('click', () => {
+      localStorage.setItem(INSTALL_DISMISSED_KEY, String(Date.now()));
+      banner.classList.remove('show');
+      setTimeout(() => banner.remove(), 500);
+    });
+
+    document.getElementById('pwa-install').addEventListener('click', async () => {
+      if (isIOSSafari()) {
+        showIOSGuide();
+        return;
+      }
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        console.log('[PWA] Install outcome:', outcome);
+        deferredPrompt = null;
+        banner.classList.remove('show');
+        setTimeout(() => banner.remove(), 500);
+      } else {
+        // fallback: راهنما نشان بده
+        showIOSGuide();
+      }
+    });
+  }
+
+  // ─── iOS Install Guide ───
+  function showIOSGuide() {
+    let guide = document.getElementById('pwa-ios-guide');
+    if (guide) {
+      guide.classList.add('show');
+      return;
+    }
+
+    guide = document.createElement('div');
+    guide.id = 'pwa-ios-guide';
+    guide.className = 'pwa-ios-guide';
+    guide.innerHTML = `
+      <div class="pwa-ios-guide-card">
+        <h3 data-pwa-i18n="iosTitle">Install on iOS</h3>
+        <p data-pwa-i18n="iosSub">Follow these steps to add APZ Wallet to your home screen:</p>
+        <div class="pwa-ios-guide-steps">
+          <div class="pwa-ios-guide-step">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/>
+              <polyline points="16 6 12 2 8 6"/>
+              <line x1="12" y1="2" x2="12" y2="15"/>
+            </svg>
+            <span data-pwa-i18n="iosStep1">Tap the Share button</span>
+          </div>
+          <div class="pwa-ios-guide-step">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            <span data-pwa-i18n="iosStep2">Scroll and tap "Add to Home Screen"</span>
+          </div>
+          <div class="pwa-ios-guide-step">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            <span data-pwa-i18n="iosStep3">Tap "Add" to confirm</span>
+          </div>
+        </div>
+        <button class="pwa-ios-guide-close" id="pwa-ios-close" data-pwa-i18n="gotIt">Got it</button>
+      </div>
+    `;
+    document.body.appendChild(guide);
+
+    applyPwaI18n(guide);
+
+    requestAnimationFrame(() => guide.classList.add('show'));
+
+    const close = () => {
+      guide.classList.remove('show');
+    };
+    document.getElementById('pwa-ios-close').addEventListener('click', close);
+    guide.addEventListener('click', (e) => {
+      if (e.target === guide) close();
+    });
+  }
+
+  // ─── Update Toast ───
+  function showUpdateToast(newWorker) {
+    let toast = document.getElementById('pwa-update-toast');
+    if (toast) return;
+
+    toast = document.createElement('div');
+    toast.id = 'pwa-update-toast';
+    toast.className = 'pwa-update-toast';
+    toast.innerHTML = `
+      <span data-pwa-i18n="updateAvailable">A new version is available!</span>
+      <button id="pwa-update-btn" data-pwa-i18n="refresh">Refresh</button>
+    `;
+    document.body.appendChild(toast);
+    applyPwaI18n(toast);
+
+    requestAnimationFrame(() => toast.classList.add('show'));
+
+    document.getElementById('pwa-update-btn').addEventListener('click', () => {
+      newWorker.postMessage({ type: 'SKIP_WAITING' });
+    });
+  }
+
+  // ─── Offline Banner ───
+  function setupOfflineDetection() {
+    const update = () => {
+      let banner = document.getElementById('pwa-offline-banner');
+      if (!navigator.onLine) {
+        if (!banner) {
+          banner = document.createElement('div');
+          banner.id = 'pwa-offline-banner';
+          banner.className = 'pwa-offline-banner';
+          banner.innerHTML = `<span data-pwa-i18n="offline">You are offline — showing cached data</span>`;
+          document.body.appendChild(banner);
+          applyPwaI18n(banner);
+        }
+        requestAnimationFrame(() => banner.classList.add('show'));
+      } else if (banner) {
+        banner.classList.remove('show');
+        setTimeout(() => banner.remove(), 400);
+      }
+    };
+
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    update();
+  }
+
+  // ─── i18n for PWA UI ───
+  const PWA_I18N = {
+    en: {
+      title: 'Install APZ Wallet',
+      sub: 'Add to home screen for offline access',
+      install: 'Install',
+      later: 'Later',
+      iosTitle: 'Install on iOS',
+      iosSub: 'Follow these steps to add APZ Wallet to your home screen:',
+      iosStep1: 'Tap the Share button',
+      iosStep2: 'Scroll and tap "Add to Home Screen"',
+      iosStep3: 'Tap "Add" to confirm',
+      gotIt: 'Got it',
+      updateAvailable: 'A new version is available!',
+      refresh: 'Refresh',
+      offline: 'You are offline — showing cached data'
+    },
+    fa: {
+      title: 'نصب APZ Wallet',
+      sub: 'برای دسترسی آفلاین، به صفحه اصلی اضافه کنید',
+      install: 'نصب',
+      later: 'بعداً',
+      iosTitle: 'نصب روی iOS',
+      iosSub: 'برای افزودن APZ Wallet به صفحه اصلی، این مراحل را دنبال کنید:',
+      iosStep1: 'روی دکمه اشتراک‌گذاری (Share) بزنید',
+      iosStep2: 'پایین بروید و "Add to Home Screen" را بزنید',
+      iosStep3: 'برای تأیید "Add" را بزنید',
+      gotIt: 'متوجه شدم',
+      updateAvailable: 'نسخه جدیدی در دسترس است!',
+      refresh: 'به‌روزرسانی',
+      offline: 'آفلاین هستید — داده‌های کش‌شده نمایش داده می‌شوند'
+    },
+    de: {
+      title: 'APZ Wallet installieren',
+      sub: 'Zum Startbildschirm hinzufügen für Offline-Zugriff',
+      install: 'Installieren',
+      later: 'Später',
+      iosTitle: 'Auf iOS installieren',
+      iosSub: 'Folgen Sie diesen Schritten, um APZ Wallet zum Startbildschirm hinzuzufügen:',
+      iosStep1: 'Tippen Sie auf die Teilen-Schaltfläche',
+      iosStep2: 'Scrollen Sie und tippen Sie auf "Zum Home-Bildschirm"',
+      iosStep3: 'Tippen Sie auf "Hinzufügen" zum Bestätigen',
+      gotIt: 'Verstanden',
+      updateAvailable: 'Eine neue Version ist verfügbar!',
+      refresh: 'Aktualisieren',
+      offline: 'Sie sind offline — zwischengespeicherte Daten werden angezeigt'
+    }
+  };
+
+  function applyPwaI18n(container) {
+    const lang = localStorage.getItem('apz-dashboard-lang') || 'en';
+    const t = PWA_I18N[lang] || PWA_I18N.en;
+    container.querySelectorAll('[data-pwa-i18n]').forEach((el) => {
+      const key = el.dataset.pwaI18n;
+      if (t[key]) el.textContent = t[key];
+    });
+  }
+
+  // ─── Register SW ───
+  async function registerSW() {
+    if (!('serviceWorker' in navigator)) {
+      console.warn('[PWA] Service Worker not supported');
+      return;
+    }
+
+    try {
+      registration = await navigator.serviceWorker.register(SW_URL, {
+        scope: SW_SCOPE,
+        updateViaCache: 'none'
+      });
+
+      console.log('[PWA] Service Worker registered:', registration.scope);
+
+      // ─── Update Detection ───
+      registration.addEventListener('updatefound', () => {
+        const newWorker = registration.installing;
+        if (!newWorker) return;
+
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            console.log('[PWA] New version available');
+            showUpdateToast(newWorker);
+          }
+        });
+      });
+
+      // ─── Controller Change → Reload ───
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+
+      // ─── Check for updates periodically ───
+      setInterval(() => registration.update(), 60 * 60 * 1000); // 1 ساعت
+
+    } catch (err) {
+      console.error('[PWA] Service Worker registration failed:', err);
+    }
+  }
+
+  // ─── Install Prompt Capture ───
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    console.log('[PWA] Install prompt captured');
+
+    if (shouldShowInstallBanner()) {
+      setTimeout(createInstallBanner, 3000);
+    }
+  });
+
+  // ─── App Installed ───
+  window.addEventListener('appinstalled', () => {
+    console.log('[PWA] App installed');
+    isInstalled = true;
+    localStorage.removeItem(INSTALL_DISMISSED_KEY);
+
+    const banner = document.getElementById('pwa-install-banner');
+    if (banner) {
+      banner.classList.remove('show');
+      setTimeout(() => banner.remove(), 400);
+    }
+  });
+
+  // ─── Re-apply i18n on language switch ───
+  window.addEventListener('apz-lang-change', () => {
+    ['pwa-install-banner', 'pwa-ios-guide', 'pwa-update-toast', 'pwa-offline-banner'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) applyPwaI18n(el);
+    });
+  });
+
+  // ─── Init ───
+  function init() {
+    if (isStandalone()) {
+      console.log('[PWA] Running in standalone mode');
+      isInstalled = true;
+      document.documentElement.classList.add('pwa-standalone');
+    }
+
+    setupOfflineDetection();
+    registerSW();
+
+    // برای iOS: چون beforeinstallprompt نداریم، راهنما نشان بده
+    if (isIOSSafari() && shouldShowInstallBanner()) {
+      setTimeout(createInstallBanner, 4000);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
+  // ─── Expose API ───
+  window.APZ_PWA = {
+    isInstalled: () => isInstalled,
+    isStandalone,
+    isIOS,
+    promptInstall: () => {
+      if (deferredPrompt) deferredPrompt.prompt();
+      else showIOSGuide();
+    },
+    clearCache: () => {
+      if (registration?.active) {
+        registration.active.postMessage({ type: 'CLEAR_CACHE' });
+      }
+    }
+  };
+})();
+```
+
+---
+
+6️⃣ 🔄 به‌روزرسانی docs/index.html
+
+این خطوط را به بخش <head> اضافه کنید:
+
+```html
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#00ffcc" />
+  <meta name="description" content="APZ Wallet — Release Dashboard. Official Wallet for APZ Chain." />
+
+  <!-- ═══════ PWA Meta Tags ═══════ -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="application-name" content="APZ Wallet" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="APZ Wallet" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="msapplication-TileColor" content="#05070a" />
+  <meta name="msapplication-tap-highlight" content="no" />
+
+  <!-- ═══════ PWA Icons ═══════ -->
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png" />
+  <link rel="apple-touch-icon" sizes="152x152" href="assets/icons/icon-152.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/icons/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="assets/icons/icon-512.png" />
+  <link rel="icon" type="image/svg+xml" href="assets/icons/icon.svg" />
+
+  <!-- ... بقیه head ... -->
+
+  <!-- ═══════ PWA Styles ═══════ -->
+  <link rel="stylesheet" href="assets/css/pwa.css" />
+</head>
+```
+
+و این خطوط را به قبل از </body> اضافه کنید:
+
+```html
+  <!-- Scripts -->
+  <script src="assets/js/config.js"></script>
+  <script src="assets/js/i18n.js"></script>
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/ui.js"></script>
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/pwa.js"></script>  <!-- ✨ اضافه شود -->
+</body>
+```
+
+---
+
+7️⃣ 🔔 انتشار رویداد تغییر زبان در app.js
+
+در docs/assets/js/app.js، بعد از applyLang، این خط را اضافه کنید:
+
+```javascript
+function applyLang(lang) {
+  // ... کد موجود ...
+
+  // ✨ رویداد برای PWA
+  window.dispatchEvent(new CustomEvent('apz-lang-change', { detail: { lang } }));
+}
+```
+
+---
+
+8️⃣ 🖼️ اسکریپت تولید خودکار آیکون‌ها
+
+scripts/generate-icons.sh
+
+```bash
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════
+# APZ Wallet — Generate PWA Icons
+# نیاز: ImageMagick (convert)
+#   • Ubuntu: sudo apt install imagemagick
+#   • macOS:  brew install imagemagick
+# ═══════════════════════════════════════════════
+
+set -euo pipefail
+
+SRC="docs/assets/icons/icon.svg"
+OUT="docs/assets/icons"
+
+if [ ! -f "$SRC" ]; then
+  echo "❌ Source not found: $SRC"
+  exit 1
+fi
+
+echo "🎨 Generating PWA icons from $SRC"
+
+# ─── Standard PNG icons ───
+for size in 72 96 128 144 152 192 384 512; do
+  convert -background none -density 384 "$SRC" \
+    -resize "${size}x${size}" \
+    "$OUT/icon-${size}.png"
+  echo "  ✓ icon-${size}.png"
+done
+
+# ─── Apple Touch Icon (180×180, بدون شفافیت) ───
+convert -background "#05070a" -density 384 "$SRC" \
+  -resize 180x180 -flatten \
+  "$OUT/apple-touch-icon.png"
+echo "  ✓ apple-touch-icon.png"
+
+# ─── Maskable icons (با padding 10% و بک‌گراند توپر) ───
+for size in 192 512; do
+  inner=$((size * 80 / 100))
+  convert -size "${size}x${size}" xc:"#05070a" \
+    \( -background none -density 384 "$SRC" -resize "${inner}x${inner}" \) \
+    -gravity center -composite \
+    "$OUT/icon-maskable-${size}.png"
+  echo "  ✓ icon-maskable-${size}.png"
+done
+
+# ─── Favicon ───
+convert -background none -density 384 "$SRC" \
+  -resize 32x32 \
+  "docs/favicon.ico"
+echo "  ✓ favicon.ico"
+
+echo "✅ All icons generated successfully!"
+```
+
+اجرا:
+
+```bash
+chmod +x scripts/generate-icons.sh
+./scripts/generate-icons.sh
+```
+
+---
+
+9️⃣ 🔧 به‌روزرسانی Workflow انتشار Pages
+
+.github/workflows/pages-deploy.yml (به‌روزرسانی)
+
+```yaml
+name: Deploy GitHub Pages (PWA)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages-deploy.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build PWA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
+      - name: Generate PWA Icons
+        run: |
+          chmod +x scripts/generate-icons.sh
+          ./scripts/generate-icons.sh
+        continue-on-error: true
+
+      - name: Validate PWA Assets
+        run: |
+          echo "🔍 Validating PWA assets..."
+          [ -f docs/manifest.webmanifest ] || (echo "❌ manifest missing" && exit 1)
+          [ -f docs/sw.js ] || (echo "❌ sw.js missing" && exit 1)
+          [ -f docs/offline.html ] || (echo "❌ offline.html missing" && exit 1)
+          echo "✅ All PWA assets present"
+
+      - name: Validate Manifest JSON
+        run: |
+          python3 -c "import json; json.load(open('docs/manifest.webmanifest'))" \
+            && echo "✅ manifest.webmanifest is valid JSON"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Verify Deployment
+        run: |
+          URL="${{ steps.deployment.outputs.page_url }}"
+          echo "🌐 Dashboard: $URL"
+          sleep 15
+          curl -sSf -o /dev/null -w "HTTP %{http_code}\n" "$URL" || true
+          curl -sSf -o /dev/null -w "Manifest HTTP %{http_code}\n" "${URL}manifest.webmanifest" || true
+          curl -sSf -o /dev/null -w "SW HTTP %{http_code}\n" "${URL}sw.js" || true
+```
+
+---
+
+🔟 ✨ بررسی نصب PWA
+
+چک‌لیست تست:
+
+Android (Chrome/Edge):
+
+☐ بازدید از داشبورد → بنر نصب ظاهر می‌شود
+☐ کلیک روی "Install" → اپ نصب می‌شود
+☐ آیکون در صفحه اصلی ظاهر می‌شود
+☐ اپ در حالت standalone باز می‌شود
+☐ در حالت آفلاین → پیام offline نمایش داده می‌شود
+
+iOS (Safari):
+
+☐ بازدید از داشبورد → بنر نصب ظاهر می‌شود
+☐ کلیک روی "Install" → راهنمای iOS نمایش داده می‌شود
+☐ Share → "Add to Home Screen" → اپ نصب می‌شود
+☐ اپ آیکون و نام صحیح دارد
+
+Desktop (Chrome/Edge):
+
+☐ آیکون نصب (⊕) در نوار آدرس
+☐ نصب در پنجره مستقل
+
+DevTools → Application:
+
+☐ Manifest شناسایی می‌شود
+☐ Service Worker فعال (status: activated)
+☐ Cache Storage پر شده
+☐ Lighthouse PWA → Score بالای ۹۰
+
+---
+
+1️⃣1️⃣ 🧪 تست Lighthouse
+
+```bash
+# نصب lighthouse
+npm install -g lighthouse
+
+# اجرا روی URL محلی یا GitHub Pages
+lighthouse https://apzchain.github.io/APZ_WALLET/ \
+  --only-categories=pwa,best-practices,accessibility \
+  --output=html \
+  --output-path=./lighthouse-report.html \
+  --chrome-flags="--headless"
+
+# باز کردن گزارش
+open lighthouse-report.html
+```
+
+معیارهای قبولی:
+
+معیار حداقل
+PWA Score 90+
+Performance 80+
+Accessibility 90+
+Best Practices 90+
+SEO 90+
+
+---
+
+1️⃣2️⃣ 📋 خلاصه فایل‌ها
+
+فایل نقش
+manifest.webmanifest شناسنامه PWA (نام، آیکون، رنگ‌ها)
+sw.js Service Worker — کش، آفلاین، push
+offline.html صفحه‌ی آفلاین
+assets/css/pwa.css استایل بنر نصب، toast، banner
+assets/js/pwa.js منطق نصب، آپدیت، آفلاین
+assets/icons/icon-*.png آیکون‌های چند اندازه
+assets/icons/icon-maskable-*.png آیکون‌های maskable (Android)
+assets/icons/apple-touch-icon.png آیکون iOS
+scripts/generate-icons.sh تولید خودکار آیکون‌ها
+
+---
+
+1️⃣3️⃣ 🎯 جریان کامل نصب
+
+```
+👤 کاربر موبایل
+    │
+    ├─► بازدید داشبورد (Chrome)
+    │       │
+    │       ├─► SW ثبت می‌شود
+    │       ├─► Manifest شناسایی می‌شود
+    │       └─► 🎉 بنر "Install APZ Wallet" ظاهر می‌شود
+    │
+    ├─► کلیک روی "Install"
+    │       │
+    │       └─► اپ به صفحه اصلی اضافه می‌شود
+    │
+    ├─► باز کردن از صفحه اصلی
+    │       │
+    │       ├─► حالت standalone (بدون نوار آدرس)
+    │       ├─► آیکون + نام APZ Wallet
+    │       └─► Splash Screen با رنگ نئونی
+    │
+    ├─► قطع اینترنت
+    │       │
+    │       └─► داده‌های کش‌شده نمایش داده می‌شوند
+    │
+    └─► انتشار نسخه جدید
+            │
+            └─► Toast "نسخه جدید در دسترس است" → Refresh
+```
+
+---
+
+1️⃣4️⃣ ✅ چک‌لیست نهایی
+
+☐ manifest.webmanifest ساخته شد
+☐ sw.js در docs/ قرار گرفت
+☐ offline.html ساخته شد
+☐ pwa.css به <head> اضافه شد
+☐ pwa.js به <body> اضافه شد
+☐ index.html با meta tagهای PWA به‌روز شد
+☐ آیکون‌ها با generate-icons.sh تولید شدند
+☐ Workflow pages-deploy.yml به‌روز شد
+☐ رویداد apz-lang-change در app.js اضافه شد
+☐ Lighthouse PWA ≥ 90
+☐ تست نصب روی Android موفق
+☐ تست نصب روی iOS موفق
+☐ تست آفلاین موفق
+
+---
+
+1️⃣5️⃣ 🎁 نکات پیشرفته
+
+افزودن Push Notification (اختیاری)
+
+برای دریافت اعلان هنگام انتشار نسخه جدید:
+
+```javascript
+// در pwa.js
+async function subscribeToPush() {
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+  });
+  // ارسال sub به سرور
+}
+```
+
+Background Sync
+
+```javascript
+// در sw.js
+self.addEventListener('sync', (event) => {
+  if (event.tag === 'sync-releases') {
+    event.waitUntil(fetchReleasesAndCache());
+  }
+});
+```
+
+Share Target
+
+با تنظیم share_target در manifest، کاربران می‌توانند محتوای دیگر اپ‌ها را با APZ Wallet به اشتراک بگذارند (لینک بلاک‌اکسپلورر، آدرس کیف پول، و...).
+
+---
