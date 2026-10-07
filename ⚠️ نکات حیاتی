@@ -1,0 +1,6 @@
+مورد توضیح
+10.0.2.2 در امولاتور اندروید، این آدرس به localhost کامپیوتر اشاره می‌کند
+WalletConnect ID حتماً از cloud.reown.com بگیر و در App.tsx جایگزین کن
+Keystore فایل apz-release.keystore را گم نکن — برای آپدیت‌های بعدی لازمه
+usesCleartextTraffic برای اتصال به RPC محلی روی HTTP لازمه
+Deep Link apzchain:// برای بازگشت از کیف پول به اپ تنظیم شده
