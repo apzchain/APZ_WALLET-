@@ -1,0 +1,2147 @@
+
+---
+
+📁 ساختار فایل‌های جدید
+
+```
+docs/
+├── sw.js                           # 🔄 به‌روزرسانی می‌شود
+├── share.html                      # ✨ جدید (Share Target)
+├── manifest.webmanifest            # 🔄 به‌روزرسانی می‌شود
+├── assets/
+│   ├── css/
+│   │   ├── pwa.css                 # 🔄 به‌روزرسانی می‌شود
+│   │   └── share.css               # ✨ جدید
+│   └── js/
+│       ├── pwa.js                  # 🔄 به‌روزرسانی می‌شود
+│       ├── bg-sync.js              # ✨ جدید
+│       └── share.js                # ✨ جدید
+└── data/
+    └── releases-cache.json         # (تولید خودکار)
+```
+
+---
+
+بخش اول: 🔄 Background Sync
+
+1️⃣ docs/assets/js/bg-sync.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Background Sync Manager
+   Features:
+     • One-off sync (after connection restored)
+     • Periodic Background Sync (Chrome/Edge only)
+     • IndexedDB cache for offline releases
+     • Sync status events
+   ═══════════════════════════════════════════════ */
+
+(function () {
+  'use strict';
+
+  const CFG = window.APZ_CONFIG;
+  const DB_NAME = 'apz-wallet-db';
+  const DB_VERSION = 1;
+  const STORE_RELEASES = 'releases';
+  const STORE_META = 'meta';
+
+  // ─── IndexedDB Helpers ───
+  let dbPromise = null;
+
+  function openDB() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_RELEASES)) {
+          const store = db.createObjectStore(STORE_RELEASES, { keyPath: 'id' });
+          store.createIndex('tag_name', 'tag_name', { unique: false });
+          store.createIndex('published_at', 'published_at', { unique: false });
+        }
+        if (!db.objectStoreNames.contains(STORE_META)) {
+          db.createObjectStore(STORE_META, { keyPath: 'key' });
+        }
+      };
+
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return dbPromise;
+  }
+
+  async function saveReleases(releases) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_RELEASES, 'readwrite');
+      const store = tx.objectStore(STORE_RELEASES);
+      // پاک کردن قبلی
+      store.clear();
+      releases.forEach((r) => store.put(r));
+      tx.oncomplete = () => resolve(releases.length);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function readReleases() {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_RELEASES, 'readonly');
+      const store = tx.objectStore(STORE_RELEASES);
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function setMeta(key, value) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_META, 'readwrite');
+      tx.objectStore(STORE_META).put({ key, value });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function getMeta(key) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_META, 'readonly');
+      const req = tx.objectStore(STORE_META).get(key);
+      req.onsuccess = () => resolve(req.result?.value);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // ─── Sync Functions ───
+  async function fetchAndCacheReleases() {
+    try {
+      const res = await fetch(
+        `${CFG.api.base}${CFG.api.releases
+          .replace('{owner}', CFG.repo.owner)
+          .replace('{repo}', CFG.repo.name)}?per_page=30`,
+        { headers: { Accept: 'application/vnd.github+json' } }
+      );
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const releases = await res.json();
+      await saveReleases(releases);
+      await setMeta('lastSync', Date.now());
+      await setMeta('lastSyncCount', releases.length);
+
+      // اطلاع به UI
+      notifyUI('sync-complete', { count: releases.length });
+      console.log('[BG-Sync] Cached', releases.length, 'releases');
+
+      return releases;
+    } catch (err) {
+      console.error('[BG-Sync] Fetch failed:', err);
+      throw err;
+    }
+  }
+
+  function notifyUI(type, data) {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.ready.then((reg) => {
+      reg.active?.postMessage({ type: 'BROADCAST', payload: { type, data } });
+    });
+
+    // همچنین در همین tab
+    window.dispatchEvent(new CustomEvent(`apz-${type}`, { detail: data }));
+  }
+
+  // ─── Register Sync ───
+  async function requestOneOffSync(tag = 'sync-releases') {
+    if (!('serviceWorker' in navigator)) return false;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if (!('sync' in reg)) {
+        console.warn('[BG-Sync] One-off sync not supported');
+        return false;
+      }
+      await reg.sync.register(tag);
+      console.log('[BG-Sync] Registered sync:', tag);
+      return true;
+    } catch (err) {
+      console.error('[BG-Sync] Sync registration failed:', err);
+      return false;
+    }
+  }
+
+  async function registerPeriodicSync() {
+    if (!('serviceWorker' in navigator)) return false;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if (!('periodicSync' in reg)) {
+        console.warn('[BG-Sync] Periodic sync not supported');
+        return false;
+      }
+
+      const status = await navigator.permissions.query({
+        name: 'periodic-background-sync'
+      });
+
+      if (status.state !== 'granted') {
+        console.warn('[BG-Sync] Periodic sync permission not granted');
+        return false;
+      }
+
+      await reg.periodicSync.register('sync-releases-periodic', {
+        minInterval: 6 * 60 * 60 * 1000 // حداقل ۶ ساعت
+      });
+
+      console.log('[BG-Sync] Periodic sync registered (6h interval)');
+      await setMeta('periodicSyncRegistered', true);
+      return true;
+    } catch (err) {
+      console.error('[BG-Sync] Periodic sync failed:', err);
+      return false;
+    }
+  }
+
+  async function unregisterPeriodicSync() {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if ('periodicSync' in reg) {
+        await reg.periodicSync.unregister('sync-releases-periodic');
+        await setMeta('periodicSyncRegistered', false);
+        console.log('[BG-Sync] Periodic sync unregistered');
+      }
+    } catch (err) {
+      console.error('[BG-Sync] Unregister failed:', err);
+    }
+  }
+
+  // ─── Init ───
+  async function init() {
+    // بررسی وضعیت آنلاین/آفلاین
+    window.addEventListener('online', () => {
+      console.log('[BG-Sync] Back online — requesting sync');
+      requestOneOffSync();
+    });
+
+    window.addEventListener('offline', () => {
+      console.log('[BG-Sync] Offline');
+    });
+
+    // اگر آفلاین هستیم، سینک ثبت کن
+    if (!navigator.onLine) {
+      await requestOneOffSync();
+    }
+
+    // ثبت Periodic Sync (اگر پشتیبانی شود)
+    await registerPeriodicSync();
+
+    // بررسی آخرین سینک
+    const lastSync = await getMeta('lastSync');
+    if (lastSync) {
+      console.log('[BG-Sync] Last sync:', new Date(lastSync).toLocaleString());
+    }
+  }
+
+  // ─── Public API ───
+  window.APZ_BG_SYNC = {
+    init,
+    fetchAndCacheReleases,
+    readReleases,
+    getMeta,
+    setMeta,
+    requestOneOffSync,
+    registerPeriodicSync,
+    unregisterPeriodicSync,
+    getLastSync: () => getMeta('lastSync'),
+    isPeriodicEnabled: async () => {
+      if (!('serviceWorker' in navigator)) return false;
+      const reg = await navigator.serviceWorker.ready;
+      if (!('periodicSync' in reg)) return false;
+      const tags = await reg.periodicSync.getTags();
+      return tags.includes('sync-releases-periodic');
+    }
+  };
+
+  // ─── Auto Init ───
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+```
+
+---
+
+2️⃣ 🔄 به‌روزرسانی docs/sw.js — افزودن Sync Handlers
+
+این بخش‌ها را به sw.js اضافه کنید (کامل جایگزین نسخه قبلی شود):
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Service Worker (v1.1.0)
+   Includes: Cache, Background Sync, Periodic Sync,
+             Share Target, Push
+   ═══════════════════════════════════════════════ */
+
+const VERSION = 'v1.1.0';
+const CACHE_PREFIX = 'apz-wallet';
+
+const CACHE_STATIC = `${CACHE_PREFIX}-static-${VERSION}`;
+const CACHE_RUNTIME = `${CACHE_PREFIX}-runtime-${VERSION}`;
+const CACHE_API = `${CACHE_PREFIX}-api-${VERSION}`;
+const CACHE_SHARE = `${CACHE_PREFIX}-share-${VERSION}`;
+
+const STATIC_ASSETS = [
+  './',
+  './index.html',
+  './share.html',
+  './offline.html',
+  './manifest.webmanifest',
+  './assets/css/style.css',
+  './assets/css/pwa.css',
+  './assets/css/share.css',
+  './assets/js/config.js',
+  './assets/js/i18n.js',
+  './assets/js/api.js',
+  './assets/js/ui.js',
+  './assets/js/app.js',
+  './assets/js/pwa.js',
+  './assets/js/bg-sync.js',
+  './assets/js/share.js',
+  './assets/icons/icon.svg',
+  './assets/icons/icon-192.png',
+  './assets/icons/icon-512.png'
+];
+
+const API_HOSTS = ['api.github.com'];
+const SHARE_CACHE_KEY = 'pending-share';
+
+// ─── Install ───
+self.addEventListener('install', (event) => {
+  console.log('[SW] Installing', VERSION);
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(CACHE_STATIC);
+      await Promise.all(
+        STATIC_ASSETS.map((url) =>
+          cache.add(url).catch((err) => console.warn('[SW] Skip:', url, err))
+        )
+      );
+      await self.skipWaiting();
+    })()
+  );
+});
+
+// ─── Activate ───
+self.addEventListener('activate', (event) => {
+  console.log('[SW] Activating', VERSION);
+  event.waitUntil(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(
+        keys
+          .filter((k) => k.startsWith(CACHE_PREFIX) && !k.endsWith(VERSION))
+          .map((k) => caches.delete(k))
+      );
+      if ('navigationPreload' in self.registration) {
+        await self.registration.navigationPreload.enable();
+      }
+      await self.clients.claim();
+    })()
+  );
+});
+
+// ─── Fetch ───
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  const url = new URL(request.url);
+
+  if (request.method !== 'GET') return;
+  if (!url.protocol.startsWith('http')) return;
+
+  // ── Share Target: ذخیره‌ی محتوا و ریدایرکت ──
+  if (url.pathname.endsWith('/share')) {
+    event.respondWith(handleShareRequest(request));
+    return;
+  }
+
+  if (API_HOSTS.includes(url.hostname)) {
+    event.respondWith(networkFirst(request, CACHE_API));
+    return;
+  }
+
+  if (request.mode === 'navigate') {
+    event.respondWith(handleNavigation(request));
+    return;
+  }
+
+  if (['font', 'image'].includes(request.destination)) {
+    event.respondWith(staleWhileRevalidate(request, CACHE_RUNTIME));
+    return;
+  }
+
+  event.respondWith(cacheFirst(request, CACHE_STATIC));
+});
+
+// ═══════════════════════════════════════════════
+// Background Sync Events
+// ═══════════════════════════════════════════════
+
+self.addEventListener('sync', (event) => {
+  console.log('[SW] Sync event:', event.tag);
+
+  if (event.tag === 'sync-releases') {
+    event.waitUntil(syncReleases());
+  }
+
+  if (event.tag === 'sync-releases-periodic') {
+    event.waitUntil(syncReleases({ notify: true }));
+  }
+});
+
+// ─── Periodic Background Sync ───
+self.addEventListener('periodicsync', (event) => {
+  console.log('[SW] Periodic sync event:', event.tag);
+
+  if (event.tag === 'sync-releases-periodic') {
+    event.waitUntil(syncReleases({ notify: true }));
+  }
+});
+
+// ─── Core Sync Logic ───
+async function syncReleases(opts = {}) {
+  const { notify = false } = opts;
+  try {
+    const res = await fetch(
+      'https://api.github.com/repos/apzchain/APZ_WALLET/releases?per_page=30',
+      { headers: { Accept: 'application/vnd.github+json' } }
+    );
+
+    if (!res.ok) {
+      throw new Error(`Sync failed: HTTP ${res.status}`);
+    }
+
+    const releases = await res.json();
+
+    // ذخیره در cache API
+    const cache = await caches.open(CACHE_API);
+    await cache.put(
+      'https://api.github.com/repos/apzchain/APZ_WALLET/releases?per_page=30',
+      new Response(JSON.stringify(releases), {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+
+    // ذخیره در IndexedDB (از طریق پیام به main thread)
+    await broadcastToClients({
+      type: 'SYNC_RELEASES_COMPLETE',
+      data: { releases, timestamp: Date.now() }
+    });
+
+    // اعلان به کاربر اگر نسخه جدیدی منتشر شده باشد
+    if (notify && releases[0]) {
+      const lastSeen = await getStoredLastTag();
+      const latestTag = releases[0].tag_name;
+
+      if (lastSeen && lastSeen !== latestTag) {
+        await self.registration.showNotification('APZ Wallet — New Release', {
+          body: `Version ${latestTag} is now available!`,
+          icon: './assets/icons/icon-192.png',
+          badge: './assets/icons/icon-96.png',
+          vibrate: [200, 100, 200],
+          tag: 'apz-new-release',
+          data: { url: './?action=latest' }
+        });
+      }
+      await storeLastTag(latestTag);
+    }
+
+    console.log('[SW] Sync complete:', releases.length, 'releases');
+    return releases;
+  } catch (err) {
+    console.error('[SW] Sync failed:', err);
+    throw err;
+  }
+}
+
+async function getStoredLastTag() {
+  try {
+    const cache = await caches.open(CACHE_API);
+    const res = await cache.match('https://apz-wallet-meta/last-tag');
+    if (!res) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
+async function storeLastTag(tag) {
+  try {
+    const cache = await caches.open(CACHE_API);
+    await cache.put(
+      'https://apz-wallet-meta/last-tag',
+      new Response(tag, { headers: { 'Content-Type': 'text/plain' } })
+    );
+  } catch (err) {
+    console.warn('[SW] Store last tag failed:', err);
+  }
+}
+
+async function broadcastToClients(message) {
+  const clients = await self.clients.matchAll({
+    type: 'window',
+    includeUncontrolled: true
+  });
+  clients.forEach((client) => client.postMessage(message));
+}
+
+// ═══════════════════════════════════════════════
+// Share Target Handler
+// ═══════════════════════════════════════════════
+
+async function handleShareRequest(request) {
+  try {
+    const url = new URL(request.url);
+    const params = url.searchParams;
+
+    // استخراج داده‌ها
+    const shareData = {
+      title: params.get('title') || '',
+      text: params.get('text') || '',
+      url: params.get('url') || '',
+      timestamp: Date.now()
+    };
+
+    // اگر فایل‌ها هم هستند (POST)
+    if (request.method === 'POST') {
+      const formData = await request.formData();
+      const files = formData.getAll('files') || [];
+      shareData.files = await Promise.all(
+        files.map(async (f) => {
+          if (typeof f === 'string') return { name: 'shared', size: 0 };
+          return {
+            name: f.name,
+            size: f.size,
+            type: f.type
+          };
+        })
+      );
+    }
+
+    // ذخیره در cache برای بازیابی توسط share.html
+    const cache = await caches.open(CACHE_SHARE);
+    await cache.put(
+      new Request('https://apz-wallet-share/pending'),
+      new Response(JSON.stringify(shareData), {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+
+    // ریدایرکت به صفحه share.html
+    return Response.redirect('./share.html?shared=1', 303);
+  } catch (err) {
+    console.error('[SW] Share handler failed:', err);
+    return Response.redirect('./share.html?error=1', 303);
+  }
+}
+
+// ─── Navigation Handler ───
+async function handleNavigation(request) {
+  try {
+    const fresh = await fetch(request);
+    const cache = await caches.open(CACHE_STATIC);
+    cache.put(request, fresh.clone());
+    return fresh;
+  } catch {
+    const cached = await caches.match(request);
+    return cached || caches.match('./offline.html');
+  }
+}
+
+// ─── Strategies ───
+async function cacheFirst(request, cacheName) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+  try {
+    const fresh = await fetch(request);
+    if (fresh.ok) {
+      const cache = await caches.open(cacheName);
+      cache.put(request, fresh.clone());
+    }
+    return fresh;
+  } catch {
+    const offline = await caches.match('./offline.html');
+    return offline || new Response('Offline', { status: 503 });
+  }
+}
+
+async function networkFirst(request, cacheName) {
+  try {
+    const fresh = await fetch(request);
+    if (fresh.ok) {
+      const cache = await caches.open(cacheName);
+      cache.put(request, fresh.clone());
+    }
+    return fresh;
+  } catch {
+    const cached = await caches.match(request);
+    if (cached) return cached;
+    return new Response(JSON.stringify({ offline: true, data: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+async function staleWhileRevalidate(request, cacheName) {
+  const cached = await caches.match(request);
+  const fetchPromise = fetch(request)
+    .then((fresh) => {
+      if (fresh.ok) {
+        caches.open(cacheName).then((cache) => cache.put(request, fresh.clone()));
+      }
+      return fresh;
+    })
+    .catch(() => cached);
+  return cached || fetchPromise;
+}
+
+// ═══════════════════════════════════════════════
+// Messages
+// ═══════════════════════════════════════════════
+
+self.addEventListener('message', (event) => {
+  const { type, payload } = event.data || {};
+
+  switch (type) {
+    case 'SKIP_WAITING':
+      self.skipWaiting();
+      break;
+
+    case 'CLEAR_CACHE':
+      caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))));
+      break;
+
+    case 'REQUEST_SYNC':
+      if ('sync' in self.registration) {
+        self.registration.sync.register('sync-releases');
+      }
+      break;
+
+    case 'SYNC_NOW':
+      // همگام‌سازی فوری
+      event.waitUntil(syncReleases({ notify: false }));
+      break;
+
+    case 'BROADCAST':
+      broadcastToClients(payload);
+      break;
+
+    case 'REQUEST_NOTIFICATION_PERMISSION':
+      event.waitUntil(requestNotificationPermission());
+      break;
+  }
+});
+
+async function requestNotificationPermission() {
+  if (self.Notification.permission !== 'default') return;
+  // این باید از main thread اجرا شود
+}
+
+// ═══════════════════════════════════════════════
+// Notifications
+// ═══════════════════════════════════════════════
+
+self.addEventListener('push', (event) => {
+  const data = event.data?.json() || {};
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'APZ Wallet', {
+      body: data.body || 'New update available',
+      icon: './assets/icons/icon-192.png',
+      badge: './assets/icons/icon-96.png',
+      vibrate: [200, 100, 200],
+      tag: 'apz-push',
+      data: { url: data.url || './' }
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: 'window' }).then((list) => {
+      const url = event.notification.data.url || './';
+      for (const client of list) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          client.navigate(url);
+          return client.focus();
+        }
+      }
+      return clients.openWindow(url);
+    })
+  );
+});
+```
+
+---
+
+3️⃣ 🔄 به‌روزرسانی docs/assets/js/pwa.js
+
+این بخش را به pwa.js اضافه کنید (پایان فایل، قبل از window.APZ_PWA):
+
+```javascript
+  // ─── Listen for Sync Events from SW ───
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      const { type, data } = event.data || {};
+
+      if (type === 'SYNC_RELEASES_COMPLETE') {
+        console.log('[PWA] Sync complete, releasing cached data');
+        window.dispatchEvent(new CustomEvent('apz-sync-complete', {
+          detail: data
+        }));
+      }
+    });
+  }
+
+  // ─── Request Sync on Visibility Change ───
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && navigator.onLine) {
+      // درخواست sync بعدی
+      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: 'REQUEST_SYNC' });
+      }
+    }
+  });
+```
+
+و در انتهای window.APZ_PWA، این API را اضافه کنید:
+
+```javascript
+  window.APZ_PWA = {
+    // ... موارد قبلی ...
+    syncNow: () => {
+      if (navigator.serviceWorker?.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: 'SYNC_NOW' });
+      }
+    },
+    requestBackgroundSync: () => {
+      if (navigator.serviceWorker?.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: 'REQUEST_SYNC' });
+      }
+    }
+  };
+```
+
+---
+
+4️⃣ 🔄 ادغام در docs/assets/js/app.js
+
+این تغییرات را در app.js اعمال کنید:
+
+```javascript
+// ─── در بالای فایل، بعد از API ───
+const BG_SYNC = window.APZ_BG_SYNC;
+
+// ─── در load()، اول از IndexedDB بخوان ───
+async function load(silent = false) {
+  if (isRefreshing) return;
+  isRefreshing = true;
+
+  const t = I18N[currentLang];
+  const refreshBtn = document.getElementById('refresh-btn');
+  refreshBtn?.classList.add('loading');
+
+  try {
+    // 1. اگر آفلاین، از IndexedDB بخوان
+    if (!navigator.onLine && BG_SYNC) {
+      const cached = await BG_SYNC.readReleases();
+      if (cached.length > 0) {
+        UI.renderAll({ releases: cached, ciStatus: null }, t);
+        console.log('[App] Loaded from IndexedDB (offline)');
+        return;
+      }
+    }
+
+    // 2. آنلاین: از API بگیر
+    const [releases, ciStatus] = await Promise.all([
+      API.getReleases().catch(() => []),
+      API.getWorkflowStatus(cfg.workflows.ci).catch(() => null)
+    ]);
+
+    const cleanReleases = (releases || []).filter(r => !r.draft);
+    UI.renderAll({ releases: cleanReleases, ciStatus }, t);
+
+    // 3. ذخیره در IndexedDB برای بار بعدی
+    if (BG_SYNC && cleanReleases.length > 0) {
+      BG_SYNC.setMeta('lastSync', Date.now());
+      await BG_SYNC.fetchAndCacheReleases().catch(() => {});
+    }
+
+    if (!silent) UI.showToast(t.toast.refreshed, 'success');
+  } catch (err) {
+    console.error('[APZ Dashboard]', err);
+    const msg = err.message === 'RATE_LIMIT' ? t.toast.rateLimit : t.toast.error;
+    UI.showToast(msg, 'error');
+  } finally {
+    isRefreshing = false;
+    refreshBtn?.classList.remove('loading');
+  }
+}
+
+// ─── Listen for background sync events ───
+window.addEventListener('apz-sync-complete', (e) => {
+  console.log('[App] Background sync delivered', e.detail);
+  // فقط اگر تب فعال است، UI را به‌روز کن
+  if (!document.hidden) {
+    load(true);
+  }
+});
+```
+
+---
+
+5️⃣ 🎨 استایل وضعیت Sync در docs/assets/css/pwa.css
+
+این بخش را به انتهای pwa.css اضافه کنید:
+
+```css
+/* ─── Sync Status Indicator ─── */
+.pwa-sync-status {
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  z-index: 9997;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: rgba(10, 14, 20, 0.9);
+  border: 1px solid rgba(0, 255, 204, 0.2);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: #8892b0;
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  transform: translateX(20px);
+  transition: all 300ms;
+  pointer-events: none;
+}
+
+.pwa-sync-status.show {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.pwa-sync-status svg {
+  width: 14px;
+  height: 14px;
+  animation: rotate 1.5s linear infinite;
+}
+
+.pwa-sync-status.idle svg {
+  animation: none;
+}
+
+.pwa-sync-status.success {
+  border-color: rgba(0, 255, 136, 0.4);
+  color: #00ff88;
+}
+
+@keyframes rotate {
+  to { transform: rotate(360deg); }
+}
+
+[dir="rtl"] .pwa-sync-status {
+  right: auto;
+  left: 20px;
+  transform: translateX(-20px);
+}
+[dir="rtl"] .pwa-sync-status.show {
+  transform: translateX(0);
+}
+
+/* ─── Sync button in footer ─── */
+.pwa-sync-button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: var(--transition);
+}
+
+.pwa-sync-button:hover {
+  color: var(--neon);
+  border-color: var(--border-hover);
+}
+```
+
+---
+
+بخش دوم: 📤 Share Target
+
+6️⃣ 🔄 به‌روزرسانی docs/manifest.webmanifest
+
+این بخش share_target را جایگزین کنید:
+
+```json
+  "share_target": {
+    "action": "./share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "files",
+          "accept": ["image/*", "text/*", "application/json", "application/pdf"]
+        }
+      ]
+    }
+  }
+```
+
+نکته مهم: برای پشتیبانی از فایل‌ها، باید از POST و multipart/form-data استفاده کنید. اگر فقط متن و لینک می‌خواهید، از GET استفاده کنید.
+
+---
+
+7️⃣ docs/share.html
+
+```html
+<!DOCTYPE html>
+<html lang="en" dir="ltr" id="html-root">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#00ffcc" />
+  <title>Share to APZ Wallet</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/svg+xml" href="assets/icons/icon.svg" />
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Vazirmatn:wght@400;600;700&family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/css/style.css" />
+  <link rel="stylesheet" href="assets/css/pwa.css" />
+  <link rel="stylesheet" href="assets/css/share.css" />
+</head>
+<body class="share-page">
+
+  <canvas id="particles"></canvas>
+  <div class="bg-gradient"></div>
+
+  <header class="header">
+    <div class="header-inner">
+      <div class="brand">
+        <img src="assets/icons/icon.svg" alt="APZ Wallet" class="brand-icon" />
+        <div class="brand-text">
+          <h1>APZ Wallet</h1>
+          <span class="brand-sub" data-i18n="share.sub">Share</span>
+        </div>
+      </div>
+      <nav class="lang-switch" role="group" aria-label="Language">
+        <button data-lang="en" class="lang-btn active">EN</button>
+        <button data-lang="fa" class="lang-btn">فا</button>
+        <button data-lang="de" class="lang-btn">DE</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="share-main">
+
+    <!-- Loading -->
+    <div class="share-loading" id="share-loading">
+      <div class="spinner"></div>
+      <p data-i18n="share.loading">Processing shared content...</p>
+    </div>
+
+    <!-- No content -->
+    <div class="share-empty" id="share-empty" hidden>
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="18" cy="5" r="3"/>
+        <circle cx="6" cy="12" r="3"/>
+        <circle cx="18" cy="19" r="3"/>
+        <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+        <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+      </svg>
+      <h2 data-i18n="share.noContent">No content received</h2>
+      <p data-i18n="share.noContentSub">Try sharing from another app.</p>
+      <a href="./index.html" class="btn btn-primary" data-i18n="share.backHome">Back to Dashboard</a>
+    </div>
+
+    <!-- Content received -->
+    <div class="share-content" id="share-content" hidden>
+
+      <div class="share-header">
+        <div class="share-header-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 6L9 17l-5-5"/>
+          </svg>
+        </div>
+        <div>
+          <h2 data-i18n="share.received">Content received!</h2>
+          <p data-i18n="share.receivedSub">Choose an action below</p>
+        </div>
+      </div>
+
+      <!-- Title -->
+      <div class="share-field" id="field-title" hidden>
+        <label class="share-label" data-i18n="share.title">Title</label>
+        <div class="share-value" id="share-title-value"></div>
+      </div>
+
+      <!-- URL -->
+      <div class="share-field" id="field-url" hidden>
+        <label class="share-label" data-i18n="share.url">URL</label>
+        <div class="share-value mono" id="share-url-value"></div>
+        <div class="share-actions-inline">
+          <button class="btn btn-ghost small" id="copy-url-btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+            </svg>
+            <span data-i18n="share.copy">Copy</span>
+          </button>
+          <a class="btn btn-ghost small" id="open-url-btn" target="_blank" rel="noopener">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
+              <polyline points="15 3 21 3 21 9"/>
+              <line x1="10" y1="14" x2="21" y2="3"/>
+            </svg>
+            <span data-i18n="share.open">Open</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- Text -->
+      <div class="share-field" id="field-text" hidden>
+        <label class="share-label" data-i18n="share.text">Text</label>
+        <div class="share-value" id="share-text-value"></div>
+      </div>
+
+      <!-- Files -->
+      <div class="share-field" id="field-files" hidden>
+        <label class="share-label" data-i18n="share.files">Attachments</label>
+        <ul class="share-files" id="share-files-list"></ul>
+      </div>
+
+      <!-- Detected: Address / TX hash / Tag -->
+      <div class="share-detected" id="share-detected" hidden>
+        <div class="detected-badge">
+          <span class="pulse-dot"></span>
+          <span data-i18n="share.detected">Detected</span>
+        </div>
+        <div class="detected-body">
+          <strong id="detected-type"></strong>
+          <p id="detected-value" class="mono"></p>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="share-actions">
+        <button class="action-btn action-primary" id="action-open-in-app">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <line x1="3" y1="9" x2="21" y2="9"/>
+            <line x1="9" y1="21" x2="9" y2="9"/>
+          </svg>
+          <span data-i18n="share.openInApp">Open in APZ Wallet</span>
+        </button>
+
+        <button class="action-btn" id="action-save-note">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
+            <polyline points="17 21 17 13 7 13 7 21"/>
+            <polyline points="7 3 7 8 15 8"/>
+          </svg>
+          <span data-i18n="share.saveNote">Save as Note</span>
+        </button>
+
+        <button class="action-btn" id="action-search-explorer">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <span data-i18n="share.searchExplorer">Search Explorer</span>
+        </button>
+
+        <button class="action-btn action-ghost" id="action-dismiss">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+          <span data-i18n="share.dismiss">Dismiss</span>
+        </button>
+      </div>
+
+    </div>
+
+  </main>
+
+  <footer class="footer">
+    <p>
+      <span data-i18n="footer.built">Built with</span>
+      <span class="heart">❤️</span>
+      <span data-i18n="footer.by">by</span>
+      <a href="https://github.com/apzchain" target="_blank" rel="noopener">Khalil Heyrani</a>
+      <span data-i18n="footer.for">for APZ Chain</span>
+    </p>
+  </footer>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="assets/js/config.js"></script>
+  <script src="assets/js/i18n.js"></script>
+  <script src="assets/js/ui.js"></script>
+  <script src="assets/js/share.js"></script>
+</body>
+</html>
+```
+
+---
+
+8️⃣ docs/assets/css/share.css
+
+```css
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Share Target Styles
+   ═══════════════════════════════════════════════ */
+
+.share-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.share-main {
+  flex: 1;
+  max-width: 720px;
+  width: 100%;
+  margin: 40px auto 0;
+  padding: 0 24px;
+}
+
+/* ─── Loading ─── */
+.share-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 80px 20px;
+  color: var(--text-dim);
+}
+
+.spinner {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid rgba(0, 255, 204, 0.15);
+  border-top-color: var(--neon);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Empty ─── */
+.share-empty {
+  text-align: center;
+  padding: 60px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  color: var(--text-dim);
+}
+
+.share-empty svg {
+  color: var(--neon);
+  opacity: 0.5;
+}
+
+.share-empty h2 {
+  font-size: 1.3rem;
+  color: var(--text);
+  margin: 8px 0 4px;
+}
+
+.share-empty p {
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+}
+
+/* ─── Content ─── */
+.share-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  animation: slideUp 400ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.share-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 22px;
+  background: linear-gradient(135deg, rgba(0, 255, 204, 0.06), rgba(0, 184, 255, 0.06));
+  border: 1px solid rgba(0, 255, 204, 0.25);
+  border-radius: 16px;
+}
+
+.share-header-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--neon), var(--neon-2));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--bg);
+  flex-shrink: 0;
+  box-shadow: 0 0 24px rgba(0, 255, 204, 0.4);
+  animation: pop 500ms cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+
+@keyframes pop {
+  0% { transform: scale(0); }
+  100% { transform: scale(1); }
+}
+
+.share-header h2 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.share-header p {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+/* ─── Fields ─── */
+.share-field {
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  transition: var(--transition);
+}
+
+.share-field:hover {
+  border-color: var(--border-hover);
+}
+
+.share-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.share-value {
+  font-size: 0.92rem;
+  color: var(--text);
+  line-height: 1.6;
+  word-break: break-word;
+  padding: 8px 0;
+}
+
+.share-value.mono {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--neon);
+  letter-spacing: 0.02em;
+}
+
+.share-actions-inline {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.btn.small {
+  padding: 6px 12px;
+  font-size: 0.75rem;
+}
+
+/* ─── Files ─── */
+.share-files {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.share-files li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(0, 255, 204, 0.05);
+  border: 1px solid rgba(0, 255, 204, 0.15);
+  border-radius: 10px;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.share-files svg {
+  color: var(--neon);
+  flex-shrink: 0;
+}
+
+/* ─── Detected ─── */
+.share-detected {
+  padding: 18px 20px;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.08), rgba(0, 184, 255, 0.08));
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  animation: slideUp 500ms 100ms both;
+}
+
+.detected-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(168, 85, 247, 0.15);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #c8a3f7;
+  flex-shrink: 0;
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #a855f7;
+  box-shadow: 0 0 10px #a855f7;
+  animation: pulse 1.5s infinite;
+}
+
+.detected-body {
+  min-width: 0;
+}
+
+.detected-body strong {
+  display: block;
+  font-size: 0.88rem;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.detected-body p {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: #c8a3f7;
+  word-break: break-all;
+}
+
+/* ─── Actions ─── */
+.share-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  transition: var(--transition);
+  text-decoration: none;
+  justify-content: flex-start;
+}
+
+.action-btn:hover {
+  border-color: var(--border-hover);
+  background: var(--surface-2);
+  transform: translateY(-1px);
+  color: var(--text);
+  text-shadow: none;
+}
+
+.action-btn svg {
+  flex-shrink: 0;
+  color: var(--neon);
+}
+
+.action-primary {
+  grid-column: 1 / -1;
+  background: linear-gradient(135deg, var(--neon), var(--neon-2));
+  border-color: transparent;
+  color: var(--bg);
+  box-shadow: 0 6px 24px rgba(0, 255, 204, 0.25);
+}
+
+.action-primary svg { color: var(--bg); }
+
+.action-primary:hover {
+  box-shadow: 0 8px 32px rgba(0, 255, 204, 0.45);
+  color: var(--bg);
+}
+
+.action-ghost {
+  grid-column: 1 / -1;
+  background: transparent;
+  border-color: rgba(136, 146, 176, 0.15);
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  justify-content: center;
+}
+
+.action-ghost:hover {
+  color: var(--danger);
+  border-color: rgba(255, 56, 96, 0.3);
+}
+
+.action-ghost svg { color: currentColor; }
+
+/* ─── Responsive ─── */
+@media (max-width: 480px) {
+  .share-main { padding: 0 16px; margin-top: 24px; }
+
+  .share-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .share-header {
+    padding: 16px 18px;
+    gap: 12px;
+  }
+
+  .share-header-icon {
+    width: 44px;
+    height: 44px;
+  }
+
+  .share-detected {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+[dir="rtl"] .action-btn { flex-direction: row-reverse; }
+[dir="rtl"] .share-files li { flex-direction: row-reverse; }
+[dir="rtl"] .detected-body { text-align: right; }
+[dir="rtl"] .share-header { flex-direction: row-reverse; }
+```
+
+---
+
+9️⃣ docs/assets/js/share.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Share Target Handler
+   Handles: URL, text, title, files
+   Detects: addresses, TX hashes, chain IDs
+   ═══════════════════════════════════════════════ */
+
+(function () {
+  'use strict';
+
+  const CFG = window.APZ_CONFIG;
+  const I18N = window.APZ_I18N;
+
+  const SHARE_CACHE_NAME = 'apz-wallet-share-v1.1.0';
+  const SHARE_CACHE_URL = 'https://apz-wallet-share/pending';
+  const NOTES_KEY = 'apz-shared-notes';
+
+  let currentLang = localStorage.getItem('apz-dashboard-lang') || 'en';
+  let sharedData = null;
+
+  // ─── i18n for share page ───
+  const SHARE_I18N = {
+    en: {
+      sub: 'Share',
+      loading: 'Processing shared content...',
+      noContent: 'No content received',
+      noContentSub: 'Try sharing from another app.',
+      backHome: 'Back to Dashboard',
+      received: 'Content received!',
+      receivedSub: 'Choose an action below',
+      title: 'Title',
+      url: 'URL',
+      text: 'Text',
+      files: 'Attachments',
+      copy: 'Copy',
+      open: 'Open',
+      detected: 'Detected',
+      openInApp: 'Open in APZ Wallet',
+      saveNote: 'Save as Note',
+      searchExplorer: 'Search Explorer',
+      dismiss: 'Dismiss',
+      copied: 'Copied to clipboard',
+      saved: 'Saved to notes',
+      typeAddress: 'Wallet Address',
+      typeTx: 'Transaction Hash',
+      typeBlock: 'Block Number',
+      typeChainId: 'Chain ID',
+      typeEVM: 'EVM Address',
+      typeURL: 'URL'
+    },
+    fa: {
+      sub: 'اشتراک‌گذاری',
+      loading: 'در حال پردازش محتوای اشتراک‌گذاری‌شده...',
+      noContent: 'محتوایی دریافت نشد',
+      noContentSub: 'از یک اپ دیگر دوباره تلاش کنید.',
+      backHome: 'بازگشت به داشبورد',
+      received: 'محتوا دریافت شد!',
+      receivedSub: 'یک گزینه را انتخاب کنید',
+      title: 'عنوان',
+      url: 'آدرس اینترنتی',
+      text: 'متن',
+      files: 'فایل‌های پیوست',
+      copy: 'کپی',
+      open: 'باز کردن',
+      detected: 'شناسایی شد',
+      openInApp: 'باز کردن در APZ Wallet',
+      saveNote: 'ذخیره به‌عنوان یادداشت',
+      searchExplorer: 'جستجو در کاوشگر',
+      dismiss: 'رد کردن',
+      copied: 'در کلیپ‌بورد کپی شد',
+      saved: 'در یادداشت‌ها ذخیره شد',
+      typeAddress: 'آدرس کیف پول',
+      typeTx: 'هش تراکنش',
+      typeBlock: 'شماره بلاک',
+      typeChainId: 'شناسه شبکه',
+      typeEVM: 'آدرس EVM',
+      typeURL: 'آدرس اینترنتی'
+    },
+    de: {
+      sub: 'Teilen',
+      loading: 'Geteilte Inhalte werden verarbeitet...',
+      noContent: 'Keine Inhalte empfangen',
+      noContentSub: 'Versuchen Sie es von einer anderen App aus.',
+      backHome: 'Zurück zum Dashboard',
+      received: 'Inhalt empfangen!',
+      receivedSub: 'Wählen Sie unten eine Aktion',
+      title: 'Titel',
+      url: 'URL',
+      text: 'Text',
+      files: 'Anhänge',
+      copy: 'Kopieren',
+      open: 'Öffnen',
+      detected: 'Erkannt',
+      openInApp: 'In APZ Wallet öffnen',
+      saveNote: 'Als Notiz speichern',
+      searchExplorer: 'Explorer durchsuchen',
+      dismiss: 'Verwerfen',
+      copied: 'In die Zwischenablage kopiert',
+      saved: 'In Notizen gespeichert',
+      typeAddress: 'Wallet-Adresse',
+      typeTx: 'Transaktions-Hash',
+      typeBlock: 'Blocknummer',
+      typeChainId: 'Chain-ID',
+      typeEVM: 'EVM-Adresse',
+      typeURL: 'URL'
+    }
+  };
+
+  function t(key) {
+    const dict = SHARE_I18N[currentLang] || SHARE_I18N.en;
+    return dict[key] || key;
+  }
+
+  // ─── Apply i18n & RTL ───
+  function applyLang(lang) {
+    if (!SHARE_I18N[lang]) lang = 'en';
+    currentLang = lang;
+    localStorage.setItem('apz-dashboard-lang', lang);
+
+    const html = document.getElementById('html-root');
+    html.lang = lang;
+    html.dir = (I18N?.[lang]?.dir) || (lang === 'fa' ? 'rtl' : 'ltr');
+
+    // عناصر [data-i18n] که از I18N اصلی می‌آیند
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+      const key = el.dataset.i18n;
+      const val = key.split('.').reduce((o, k) => o?.[k], I18N?.[lang] || {});
+      if (val) el.textContent = val;
+    });
+
+    // عناصر مخصوص share
+    renderSharedContent();
+
+    document.querySelectorAll('.lang-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.lang === lang);
+    });
+  }
+
+  // ─── Read shared data from cache ───
+  async function readSharedData() {
+    // 1. از sessionStorage (اگر POST کرده باشیم)
+    const fromSession = sessionStorage.getItem('apz-shared-data');
+    if (fromSession) {
+      sessionStorage.removeItem('apz-shared-data');
+      try { return JSON.parse(fromSession); } catch {}
+    }
+
+    // 2. از CacheStorage (از Service Worker)
+    try {
+      const cache = await caches.open(SHARE_CACHE_NAME);
+      const res = await cache.match(SHARE_CACHE_URL);
+      if (res) {
+        const data = await res.json();
+        await cache.delete(SHARE_CACHE_URL);
+        return data;
+      }
+    } catch (err) {
+      console.warn('[Share] Cache read failed:', err);
+    }
+
+    // 3. از URL params (fallback برای GET)
+    const params = new URLSearchParams(location.search);
+    if (params.get('title') || params.get('text') || params.get('url')) {
+      return {
+        title: params.get('title') || '',
+        text: params.get('text') || '',
+        url: params.get('url') || '',
+        timestamp: Date.now()
+      };
+    }
+
+    return null;
+  }
+
+  // ─── Detect content type ───
+  const PATTERNS = {
+    evmAddress: /^0x[a-fA-F0-9]{40}$/,
+    txHash: /^0x[a-fA-F0-9]{64}$/,
+    apzAddress: /^apz[a-zA-Z0-9]{38,42}$/,
+    chainId: /^chain[_-]?id[:\s]*(\d+)$/i
+  };
+
+  function detectContent(data) {
+    const candidates = [
+      data.url,
+      data.text,
+      data.title
+    ].filter(Boolean);
+
+    for (const raw of candidates) {
+      const val = raw.trim();
+
+      if (PATTERNS.txHash.test(val)) {
+        return { type: 'tx', label: t('typeTx'), value: val };
+      }
+      if (PATTERNS.evmAddress.test(val)) {
+        return { type: 'evm', label: t('typeEVM'), value: val };
+      }
+      if (PATTERNS.apzAddress.test(val)) {
+        return { type: 'address', label: t('typeAddress'), value: val };
+      }
+      const chainMatch = val.match(PATTERNS.chainId);
+      if (chainMatch) {
+        return { type: 'chainId', label: t('typeChainId'), value: chainMatch[1] };
+      }
+      if (/^\d{4,12}$/.test(val)) {
+        return { type: 'block', label: t('typeBlock'), value: val };
+      }
+      // آدرس در متن
+      const evmInText = val.match(/0x[a-fA-F0-9]{40}/);
+      if (evmInText) {
+        return { type: 'evm', label: t('typeEVM'), value: evmInText[0] };
+      }
+      const txInText = val.match(/0x[a-fA-F0-9]{64}/);
+      if (txInText) {
+        return { type: 'tx', label: t('typeTx'), value: txInText[0] };
+      }
+    }
+
+    if (data.url) {
+      return { type: 'url', label: t('typeURL'), value: data.url };
+    }
+
+    return null;
+  }
+
+  // ─── Render ───
+  function renderSharedContent() {
+    if (!sharedData) return;
+
+    // Title
+    const titleField = document.getElementById('field-title');
+    const titleValue = document.getElementById('share-title-value');
+    if (sharedData.title) {
+      titleField.hidden = false;
+      titleValue.textContent = sharedData.title;
+    } else {
+      titleField.hidden = true;
+    }
+
+    // URL
+    const urlField = document.getElementById('field-url');
+    const urlValue = document.getElementById('share-url-value');
+    const openUrlBtn = document.getElementById('open-url-btn');
+    if (sharedData.url) {
+      urlField.hidden = false;
+      urlValue.textContent = sharedData.url;
+      if (openUrlBtn) openUrlBtn.href = sharedData.url;
+    } else {
+      urlField.hidden = true;
+    }
+
+    // Text
+    const textField = document.getElementById('field-text');
+    const textValue = document.getElementById('share-text-value');
+    if (sharedData.text) {
+      textField.hidden = false;
+      textValue.textContent = sharedData.text;
+    } else {
+      textField.hidden = true;
+    }
+
+    // Files
+    const filesField = document.getElementById('field-files');
+    const filesList = document.getElementById('share-files-list');
+    if (sharedData.files && sharedData.files.length) {
+      filesField.hidden = false;
+      filesList.innerHTML = sharedData.files
+        .map((f) => `
+          <li>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/>
+              <polyline points="13 2 13 9 20 9"/>
+            </svg>
+            <span>${escapeHtml(f.name)}</span>
+            ${f.size ? `<span style="margin-left:auto;color:var(--text-dimmer);font-size:0.75rem">${formatBytes(f.size)}</span>` : ''}
+          </li>
+        `)
+        .join('');
+    } else {
+      filesField.hidden = true;
+    }
+
+    // Detected
+    const detected = detectContent(sharedData);
+    const detectedBox = document.getElementById('share-detected');
+    if (detected) {
+      detectedBox.hidden = false;
+      document.getElementById('detected-type').textContent = detected.label;
+      document.getElementById('detected-value').textContent = detected.value;
+      detectedBox.dataset.detectedType = detected.type;
+      detectedBox.dataset.detectedValue = detected.value;
+    } else {
+      detectedBox.hidden = true;
+    }
+  }
+
+  // ─── Helpers ───
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function formatBytes(b) {
+    if (!b) return '';
+    const u = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+    return `${b.toFixed(1)} ${u[i]}`;
+  }
+
+  function showToast(msg, type = 'success') {
+    const toast = document.getElementById('toast');
+    if (!toast) return;
+    toast.textContent = msg;
+    toast.className = `toast ${type} show`;
+    setTimeout(() => toast.classList.remove('show'), 2600);
+  }
+
+  // ─── Actions ───
+  function setupActions() {
+    // Copy URL
+    document.getElementById('copy-url-btn')?.addEventListener('click', async () => {
+      const val = document.getElementById('share-url-value').textContent;
+      await navigator.clipboard.writeText(val);
+      showToast(t('copied'));
+    });
+
+    // Open in app (deep link)
+    document.getElementById('action-open-in-app')?.addEventListener('click', () => {
+      const detected = document.getElementById('share-detected');
+      const type = detected?.dataset.detectedType;
+      const value = detected?.dataset.detectedValue;
+
+      let deepLink = 'apzwallet://';
+
+      if (type === 'tx') deepLink += `tx/${value}`;
+      else if (type === 'address' || type === 'evm') deepLink += `address/${value}`;
+      else if (type === 'block') deepLink += `block/${value}`;
+      else if (sharedData.url) deepLink += `open?url=${encodeURIComponent(sharedData.url)}`;
+      else deepLink += 'open';
+
+      console.log('[Share] Deep link:', deepLink);
+
+      // تلاش برای باز کردن اپ
+      window.location.href = deepLink;
+
+      // fallback: اگر اپ نبود، به داشبورد برو
+      setTimeout(() => {
+        window.location.href = './index.html';
+      }, 1500);
+    });
+
+    // Save as note
+    document.getElementById('action-save-note')?.addEventListener('click', () => {
+      const notes = JSON.parse(localStorage.getItem(NOTES_KEY) || '[]');
+      notes.unshift({
+        ...sharedData,
+        savedAt: Date.now()
+      });
+      localStorage.setItem(NOTES_KEY, JSON.stringify(notes.slice(0, 100)));
+      showToast(t('saved'));
+    });
+
+    // Search explorer
+    document.getElementById('action-search-explorer')?.addEventListener('click', () => {
+      const detected = document.getElementById('share-detected');
+      const value = detected?.dataset.detectedValue || sharedData?.text || sharedData?.url || '';
+      const q = encodeURIComponent(value);
+      // بسته به نوع، به صفحه مناسب در dashboard برو
+      window.location.href = `./index.html?action=search&q=${q}`;
+    });
+
+    // Dismiss
+    document.getElementById('action-dismiss')?.addEventListener('click', () => {
+      window.location.href = './index.html';
+    });
+  }
+
+  // ─── Init ───
+  async function init() {
+    // Language switch
+    document.querySelectorAll('.lang-btn').forEach((btn) => {
+      btn.addEventListener('click', () => applyLang(btn.dataset.lang));
+    });
+
+    // Load shared data
+    sharedData = await readSharedData();
+
+    const loading = document.getElementById('share-loading');
+    const empty = document.getElementById('share-empty');
+    const content = document.getElementById('share-content');
+
+    if (!sharedData) {
+      loading.hidden = true;
+      empty.hidden = false;
+      return;
+    }
+
+    // Render
+    setTimeout(() => {
+      loading.hidden = true;
+      content.hidden = false;
+      applyLang(currentLang);
+      setupActions();
+    }, 400);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+```
+
+---
+
+🔟 📊 افزودن چارت Sync Status در داشبورد
+
+به docs/index.html در بخش footer اضافه کنید:
+
+```html
+<p class="footer-links">
+  <!-- ... existing links ... -->
+  <button class="pwa-sync-button" id="sync-now-btn" title="Sync Now">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+    </svg>
+    <span data-i18n="sync.now">Sync</span>
+  </button>
+</p>
+```
+
+در docs/assets/js/app.js:
+
+```javascript
+// در init()
+function setupSyncButton() {
+  const btn = document.getElementById('sync-now-btn');
+  btn?.addEventListener('click', async () => {
+    const icon = btn.querySelector('svg');
+    icon.style.animation = 'rotate 1s linear infinite';
+
+    try {
+      await window.APZ_BG_SYNC?.fetchAndCacheReleases();
+      showSyncStatus('success', 'Synced just now');
+      load(true);
+    } catch {
+      showSyncStatus('error', 'Sync failed');
+    } finally {
+      setTimeout(() => { icon.style.animation = ''; }, 1000);
+    }
+  });
+}
+
+// نمایش وضعیت سینک
+function showSyncStatus(state, msg) {
+  let el = document.getElementById('sync-status-indicator');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'sync-status-indicator';
+    el.className = 'pwa-sync-status';
+    document.body.appendChild(el);
+  }
+
+  el.className = `pwa-sync-status show ${state}`;
+  el.innerHTML = `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+    </svg>
+    <span>${msg}</span>
+  `;
+
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// در init() اضافه کنید:
+setupSyncButton();
+```
+
+---
+
+1️⃣1️⃣ 🌐 افزودن i18n برای Sync و Share
+
+در docs/assets/js/i18n.js، به هر زبان اضافه کنید:
+
+```javascript
+// در en:
+sync: {
+  now: 'Sync',
+  syncing: 'Syncing...',
+  synced: 'Synced just now'
+}
+
+// در fa:
+sync: {
+  now: 'همگام‌سازی',
+  syncing: 'در حال همگام‌سازی...',
+  synced: 'همین الان همگام شد'
+}
+
+// در de:
+sync: {
+  now: 'Synchronisieren',
+  syncing: 'Synchronisiere...',
+  synced: 'Gerade synchronisiert'
+}
+```
+
+---
+
+1️⃣2️⃣ 🧪 تست Background Sync
+
+DevTools → Application → Service Workers:
+
+```
+✅ Update on reload
+✅ Bypass for network
+✅ Offline
+```
+
+DevTools → Application → Background Services → Sync:
+
+```
+• یک tag به نام "sync-releases" ببینید
+• روی "Trigger Sync" کلیک کنید
+```
+
+DevTools → Application → Background Services → Periodic Sync:
+
+```
+• tag "sync-releases-periodic" با interval 6h
+```
+
+تست دستی:
+
+```javascript
+// در کنسول:
+window.APZ_BG_SYNC.fetchAndCacheReleases().then(console.log);
+window.APZ_BG_SYNC.requestOneOffSync();
+await window.APZ_BG_SYNC.isPeriodicEnabled();
+```
+
+---
+
+1️⃣3️⃣ 🧪 تست Share Target
+
+روش ۱: از طریق Android
+
+1. یک لینک (مثلاً آدرس APZ) را در کروم کپی کنید
+2. Share بزنید
+3. APZ Wallet را انتخاب کنید
+4. share.html باز می‌شود با محتوای اشتراکی
+
+روش ۲: دستی
+
+```
+https://apzchain.github.io/APZ_WALLET/share.html?title=Test&text=0x1234567890abcdef1234567890abcdef12345678&url=https://example.com
+```
+
+روش ۳: Web Share API از کنسول
+
+```javascript
+await navigator.share({
+  title: 'APZ Transaction',
+  text: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+  url: 'https://apzchain.github.io/APZ_WALLET/'
+});
+```
+
+---
+
+1️⃣4️⃣ 📋 چک‌لیست نهایی
+
+Background Sync:
+
+☐ bg-sync.js ساخته و در HTML لود شد
+☐ sw.js با رویدادهای sync و periodicsync به‌روز شد
+☐ IndexedDB برای ذخیره releases راه‌اندازی شد
+☐ Periodic Sync ثبت می‌شود (Chrome/Edge)
+☐ One-off Sync روی بازگشت آنلاین کار می‌کند
+☐ اعلان برای نسخه جدید کار می‌کند
+
+Share Target:
+
+☐ manifest.webmanifest با share_target به‌روز شد
+☐ share.html ساخته شد
+☐ share.css با تم نئونی ساخته شد
+☐ share.js منطق تشخیص آدرس/هش را دارد
+☐ Service Worker درخواست /share را می‌گیرد
+☐ Deep link به اپ APZ Wallet کار می‌کند
+☐ سه‌زبانه (FA/EN/DE)
+
+---
+
+1️⃣5️⃣ 🎯 جریان کامل
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  📱 کاربر موبایل                                        │
+└──────────────────┬──────────────────────────────────────┘
+                   │
+        ┌──────────┴──────────┐
+        │                     │
+   [Background Sync]    [Share Target]
+        │                     │
+        │                     ├─► کاربر لینک/آدرس را
+        │                     │   در اپ دیگر کپی می‌کند
+        │                     │
+        ├─► هر ۶ ساعت         ├─► Share → APZ Wallet
+        │   releases را       │
+        │   به‌روز می‌کند       ├─► share.html باز می‌شود
+        │                     │
+        ├─► در IndexedDB      ├─► SW محتوا را از cache
+        │   ذخیره می‌کند       │   می‌خواند
+        │                     │
+        ├─► اگر نسخه جدید     ├─► تشخیص نوع محتوا:
+        │   باشد → اعلان      │   • آدرس کیف پول
+        │                     │   • هش تراکنش
+        │                     │   • شماره بلاک
+        ├─► روی بازگشت       │   • URL
+        │   آنلاین → Sync    │
+        │   خودکار            ├─► کاربر انتخاب می‌کند:
+        │                     │   • Open in App (deep link)
+        │                     │   • Save as Note
+        │                     │   • Search Explorer
+        │                     │   • Dismiss
+        │                     │
+        └─────────────────────┴──────────────────────────┘
+```
+
+---
+
+1️⃣6️⃣ 🎁 نکات پیشرفته
+
+افزودن Push Notification برای Share
+
+اگر می‌خواهید هر Share یک اعلان هم بفرستد:
+
+```javascript
+// در share.js
+if ('Notification' in window && Notification.permission === 'granted') {
+  new Notification('APZ Wallet', {
+    body: 'Shared content received',
+    icon: 'assets/icons/icon-192.png'
+  });
+}
+```
+
+Queue کردن Sync در IndexedDB
+
+برای مقاومت بیشتر، می‌توانید از Workbox Background Sync استفاده کنید:
+
+```javascript
+import { BackgroundSyncPlugin } from 'workbox-background-sync';
+
+const bgSyncPlugin = new BackgroundSyncPlugin('apz-sync-queue', {
+  maxRetentionTime: 24 * 60
+});
+```
+
+Web Share API دوطرفه
+
+کاربران می‌توانند از داشبورد APZ محتوا را با اپ‌های دیگر به اشتراک بگذارند:
+
+```javascript
+async function shareRelease(release) {
+  await navigator.share({
+    title: `APZ Wallet ${release.tag_name}`,
+    text: 'Check out the latest release!',
+    url: release.html_url
+  });
+}
+```
