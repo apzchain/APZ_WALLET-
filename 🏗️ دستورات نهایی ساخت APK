@@ -1,0 +1,23 @@
+```bash
+# ۱. نصب پکیج‌ها
+cd APZChain && npm install
+
+# ۲. ساخت Keystore (یک بار برای همیشه)
+cd android/app
+keytool -genkeypair -v -storetype PKCS12 \
+  -keystore apz-release.keystore \
+  -alias apz-key \
+  -keyalg RSA -keysize 2048 -validity 10000
+
+# ۳. ست کردن پسوردها
+export APZ_STORE_PASSWORD="پسورد_شما"
+export APZ_KEY_ALIAS="apz-key"
+export APZ_KEY_PASSWORD="پسورد_شما"
+
+# ۴. ساخت APK نهایی
+cd ../.. && cd android
+./gradlew assembleRelease
+
+# خروجی:
+# android/app/build/outputs/apk/release/app-release.apk
+```
