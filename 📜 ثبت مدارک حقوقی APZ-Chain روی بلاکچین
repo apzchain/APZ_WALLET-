@@ -1,0 +1,571 @@
+📜 ثبت مدارک حقوقی APZ-Chain روی بلاکچین
+
+مدارک ارسالی شما کامل و قانونی است. حالا این مدارک را به‌صورت غیرقابل‌تغییر، شفاف و قابل‌تأیید روی زنجیره APZ ثبت می‌کنیم.
+
+---
+
+📋 خلاصه‌ی داده‌های استخراج‌شده از مدارک
+
+فیلد مقدار
+نام شرکت آسان پرداز زاگرس
+نوع شرکت با مسئولیت محدود
+شماره ثبت ۲۴۷۷۵
+شناسه ملی ۱۴۰۱۱۰۵۸۱۲۲
+شماره پیگیری روزنامه ۷۹۴۹۱۳۹۳۴۴۶۵۰۶۵۶۶۵۷
+تاریخ ثبت ۱۴۰۰/۱۲/۰۱
+تاریخ پذیرش نهایی ۱۴۰۰/۱۲/۰۳
+مرکز اصلی کرمانشاه، مجتمع تجاری ایران، طبقه اول، واحد ۵۷، کدپستی ۶۷۱۳۸۵۳۴۳۹
+سرمایه ۱۰,۰۰۰,۰۰۰ ریال (۱۰٬۰۰۰٬۰۰۰)
+مدیرعامل خانم فروزان حیرانی مهر (کد ملی ۳۲۴۰۲۱۲۰۵۶)
+عضو هیئت مدیره آقای خلیل حیرانی (کد ملی ۳۲۵۸۲۶۶۴۱۷)
+موضوع فعالیت کامپیوتر، شبکه، پشتیبانی، ماینینگ، نرم‌افزار، سخت‌افزار
+تاریخ چاپ ۱۴۰۰/۱۲/۰۴
+
+---
+
+🎯 چرا این کار ارزش دارد؟
+
+1. تأیید رسمی موجودیت حقوقی — کاربران می‌توانند صحت ثبت شرکت را روی زنجیره ببینند
+2. غیرقابل‌دستکاری — هیچ‌کس نمی‌تواند مدارک را تغییر دهد
+3. زمان‌مهر روی بلاکچین — اثبات تاریخ ثبت
+4. مرجع حقوقی — در صورت اختلاف، قابل استناد در دادگاه
+
+---
+
+🏗️ ساختار راه‌حل
+
+```
+مدارک PDF/تصویر
+       ↓ (آپلود)
+     IPFS  →  CID (هش فایل)
+       ↓ (ثبت)
+  قرارداد هوشمند CompanyRegistry.sol
+       ↓
+   رکورد دائمی روی بلاکچین
+```
+
+---
+
+📄 ۱. قرارداد هوشمند CompanyRegistry.sol
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/**
+ * @title APZ Company Registry
+ * @notice ثبت رسمی اطلاعات حقوقی شرکت آسان پرداز زاگرس روی زنجیره APZ
+ * @dev مدارک اصلی روی IPFS ذخیره می‌شوند و هش آن‌ها اینجا ثبت می‌گردد
+ */
+contract CompanyRegistry {
+
+    struct Company {
+        string name;              // نام شرکت
+        string legalType;         // نوع حقوقی
+        string registrationNumber;// شماره ثبت
+        string nationalId;        // شناسه ملی
+        string registeredAt;      // تاریخ ثبت
+        string address_;          // مرکز اصلی
+        uint256 capital;          // سرمایه به ریال
+        string managingDirector;  // مدیرعامل
+        string[] documents;       // لیست CIDهای IPFS
+        bytes32 documentsHash;    // هش یکپارچه مدارک
+        uint256 anchoredAt;       // زمان ثبت روی بلاکچین
+        address anchorer;         // ثبت‌کننده
+        bool verified;            // آیا تأییدشده
+    }
+
+    struct Shareholder {
+        string name;
+        string nationalId;
+        uint256 shares;
+        uint256 percentage; // بر حسب صدم درصد (900000 = 90.00%)
+    }
+
+    Company public company;
+    Shareholder[] public shareholders;
+    mapping(address => bool) public verifiers;
+    address public owner;
+
+    event CompanyAnchored(bytes32 documentsHash, uint256 timestamp);
+    event DocumentAdded(string cid, string docType);
+    event VerifierAdded(address indexed verifier);
+    event CompanyVerified(address indexed verifier, uint256 timestamp);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    modifier onlyVerifier() {
+        require(verifiers[msg.sender], "Not verifier");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+        verifiers[msg.sender] = true;
+    }
+
+    /**
+     * ثبت اطلاعات اصلی شرکت
+     */
+    function anchorCompany(
+        string memory _name,
+        string memory _legalType,
+        string memory _registrationNumber,
+        string memory _nationalId,
+        string memory _registeredAt,
+        string memory _address,
+        uint256 _capital,
+        string memory _managingDirector,
+        string[] memory _documentCIDs
+    ) external onlyOwner {
+        company.name = _name;
+        company.legalType = _legalType;
+        company.registrationNumber = _registrationNumber;
+        company.nationalId = _nationalId;
+        company.registeredAt = _registeredAt;
+        company.address_ = _address;
+        company.capital = _capital;
+        company.managingDirector = _managingDirector;
+        company.documents = _documentCIDs;
+        company.anchoredAt = block.timestamp;
+        company.anchorer = msg.sender;
+        company.documentsHash = _computeHash(_documentCIDs);
+
+        emit CompanyAnchored(company.documentsHash, block.timestamp);
+    }
+
+    /**
+     * افزودن سهامدار
+     */
+    function addShareholder(
+        string memory _name,
+        string memory _nationalId,
+        uint256 _shares,
+        uint256 _percentage
+    ) external onlyOwner {
+        shareholders.push(Shareholder(_name, _nationalId, _shares, _percentage));
+    }
+
+    /**
+     * افزودن مدرک جدید (مثلاً اساسنامه اصلاحی)
+     */
+    function addDocument(string memory cid, string memory docType) external onlyOwner {
+        company.documents.push(cid);
+        company.documentsHash = _computeHash(company.documents);
+        emit DocumentAdded(cid, docType);
+    }
+
+    /**
+     * تأیید مدارک توسط verifier مجاز (مثلاً دفتر ثبت شرکت‌ها یا حسابرس)
+     */
+    function verify() external onlyVerifier {
+        company.verified = true;
+        emit CompanyVerified(msg.sender, block.timestamp);
+    }
+
+    /**
+     * افزودن verifier جدید
+     */
+    function addVerifier(address v) external onlyOwner {
+        verifiers[v] = true;
+        emit VerifierAdded(v);
+    }
+
+    /**
+     * خواندن کل اطلاعات شرکت
+     */
+    function getCompany() external view returns (
+        string memory name,
+        string memory legalType,
+        string memory registrationNumber,
+        string memory nationalId,
+        string memory registeredAt,
+        string memory address_,
+        uint256 capital,
+        string memory managingDirector,
+        bytes32 documentsHash,
+        uint256 anchoredAt,
+        bool verified
+    ) {
+        Company storage c = company;
+        return (
+            c.name, c.legalType, c.registrationNumber, c.nationalId,
+            c.registeredAt, c.address_, c.capital, c.managingDirector,
+            c.documentsHash, c.anchoredAt, c.verified
+        );
+    }
+
+    function getDocumentCount() external view returns (uint256) {
+        return company.documents.length;
+    }
+
+    function getDocument(uint256 i) external view returns (string memory) {
+        return company.documents[i];
+    }
+
+    function getShareholderCount() external view returns (uint256) {
+        return shareholders.length;
+    }
+
+    /**
+     * محاسبه هش یکپارچه مدارک (برای تأیید integrity)
+     */
+    function _computeHash(string[] memory cids) internal pure returns (bytes32) {
+        bytes memory buffer;
+        for (uint256 i = 0; i < cids.length; i++) {
+            buffer = abi.encodePacked(buffer, cids[i]);
+        }
+        return keccak256(buffer);
+    }
+}
+```
+
+---
+
+🌐 ۲. اسکریپت آپلود مدارک روی IPFS
+
+فایل جدید: scripts/upload-docs.js
+
+```javascript
+const { create } = require('ipfs-http-client');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+// اتصال به IPFS (می‌توانید از Pinata یا Infura استفاده کنید)
+const ipfs = create({
+  host: 'ipfs.infura.io',
+  port: 5001,
+  protocol: 'https',
+  // headers: { authorization: 'Basic ' + Buffer.from(INFURA_PROJECT_ID + ':' + INFURA_SECRET).toString('base64') }
+});
+
+const DOCS_DIR = path.join(__dirname, '../legal-docs');
+const OUTPUT = path.join(__dirname, '../legal-docs/cids.json');
+
+async function uploadFolder() {
+  const files = fs.readdirSync(DOCS_DIR).filter(f => !f.endsWith('.json'));
+  const result = {};
+
+  console.log(`📁 Found ${files.length} documents\n`);
+
+  for (const file of files) {
+    const filePath = path.join(DOCS_DIR, file);
+    const content = fs.readFileSync(filePath);
+    const fileHash = crypto.createHash('sha256').update(content).digest('hex');
+
+    console.log(`⬆️  Uploading: ${file} (${(content.length / 1024).toFixed(1)} KB)`);
+    console.log(`   SHA-256: ${fileHash}`);
+
+    try {
+      const { cid } = await ipfs.add(content);
+      result[file] = {
+        cid: cid.toString(),
+        sha256: fileHash,
+        size: content.length,
+        uploadedAt: new Date().toISOString()
+      };
+      console.log(`   ✅ IPFS CID: ${cid}\n`);
+    } catch (e) {
+      console.error(`   ❌ Failed: ${e.message}\n`);
+    }
+  }
+
+  fs.writeFileSync(OUTPUT, JSON.stringify(result, null, 2));
+  console.log(`\n💾 Results saved to: ${OUTPUT}`);
+  return result;
+}
+
+uploadFolder().catch(console.error);
+```
+
+---
+
+🚀 ۳. اسکریپت Anchor روی بلاکچین
+
+فایل: scripts/anchor-company.js
+
+```javascript
+const hre = require('hardhat');
+const fs = require('fs');
+const path = require('path');
+
+async function main() {
+  const cids = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '../legal-docs/cids.json'), 'utf8'
+  ));
+
+  // تبدیل به آرایه CID
+  const documentCIDs = Object.values(cids).map(d => d.cid);
+
+  const [deployer] = await hre.ethers.getSigners();
+  console.log('🚀 Anchoring from:', deployer.address);
+
+  // Deploy registry
+  const Registry = await hre.ethers.getContractFactory('CompanyRegistry');
+  const registry = await Registry.deploy();
+  await registry.waitForDeployment();
+  const registryAddr = await registry.getAddress();
+  console.log('✅ Registry deployed:', registryAddr);
+
+  // ثبت اطلاعات شرکت
+  console.log('\n📝 Registering company data...');
+  const tx1 = await registry.anchorCompany(
+    'آسان پرداز زاگرس',
+    'شرکت با مسئولیت محدود',
+    '24775',
+    '14011058122',
+    '1400/12/01',
+    'کرمانشاه، مجتمع تجاری ایران، طبقه اول، واحد 57، کدپستی 6713853439',
+    hre.ethers.parseUnits('10000000', 0), // 10,000,000 ریال
+    'فروزان حیرانی مهر',
+    documentCIDs
+  );
+  await tx1.wait();
+  console.log('✅ Company anchored');
+
+  // ثبت سهامداران
+  console.log('\n👥 Adding shareholders...');
+  await (await registry.addShareholder(
+    'فروزان حیرانی مهر', '3240212056',
+    hre.ethers.parseUnits('9000000', 0), 9000
+  )).wait();
+  await (await registry.addShareholder(
+    'خلیل حیرانی', '3258266417',
+    hre.ethers.parseUnits('1000000', 0), 1000
+  )).wait();
+  console.log('✅ 2 shareholders added');
+
+  // خواندن و نمایش
+  const info = await registry.getCompany();
+  console.log('\n════════════════════════════════════════');
+  console.log('📋 COMPANY INFO ON-CHAIN');
+  console.log('════════════════════════════════════════');
+  console.log('Name:', info[0]);
+  console.log('Type:', info[1]);
+  console.log('Reg #:', info[2]);
+  console.log('National ID:', info[3]);
+  console.log('Registered:', info[4]);
+  console.log('Capital:', hre.ethers.formatUnits(info[6], 0), 'ریال');
+  console.log('MD:', info[7]);
+  console.log('Docs Hash:', info[8]);
+  console.log('Anchored At:', new Date(Number(info[9]) * 1000).toISOString());
+  console.log('Verified:', info[10]);
+  console.log('════════════════════════════════════════');
+
+  // ذخیره آدرس قرارداد
+  fs.writeFileSync(
+    path.join(__dirname, '../legal-docs/contract-address.json'),
+    JSON.stringify({
+      registry: registryAddr,
+      chainId: 1337,
+      anchoredAt: new Date().toISOString()
+    }, null, 2)
+  );
+}
+
+main().catch(console.error);
+```
+
+---
+
+📁 ۴. ساختار پوشه‌ی مدارک
+
+```bash
+mkdir -p legal-docs/{raw,ipfs-backup}
+
+# فایل‌های تصویر مدارک را اینجا بگذارید:
+cp اساسنامه.jpg legal-docs/01-asasname.jpg
+cp صورتجلسه.jpg legal-docs/02-soorat-jalase.jpg
+cp اگهی-تاسیس.jpg legal-docs/03-agahi-tasis.jpg
+cp اگهی-روزنامه.jpg legal-docs/04-agahi-rouznameh.jpg
+```
+
+ساختار نهایی:
+
+```
+legal-docs/
+├── raw/
+│   ├── 01-asasname.jpg
+│   ├── 02-soorat-jalase.jpg
+│   ├── 03-agahi-tasis.jpg
+│   └── 04-agahi-rouznameh.jpg
+├── cids.json               ← بعد از آپلود ساخته می‌شود
+└── contract-address.json   ← بعد از anchor ساخته می‌شود
+```
+
+---
+
+🔍 ۵. صفحه‌ی تأیید (Verification Page)
+
+فایل: verify.html — کاربران با اسکن QR یا لینک، صحت مدارک را بررسی می‌کنند:
+
+```html
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>تأیید مدارک APZ-Chain</title>
+<style>
+  body { font-family: Tahoma; background: #0b0e1a; color: #e0e4f0; padding: 20px; }
+  .card { max-width: 700px; margin: auto; background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 24px; }
+  h1 { color: #a78bfa; }
+  .row { display: flex; justify-content: space-between; padding: 10px 0;
+         border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .label { color: #94a3b8; font-size: 13px; }
+  .value { font-weight: 700; }
+  .verified { background: rgba(34,197,94,0.15); color: #4ade80;
+              padding: 8px 16px; border-radius: 30px; display: inline-block; }
+  .hash { font-family: monospace; font-size: 11px; word-break: break-all;
+          color: #a78bfa; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 8px; }
+  a { color: #60a5fa; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🏢 آسان پرداز زاگرس</h1>
+  <p class="verified">✅ ثبت‌شده روی بلاکچین APZ-Chain</p>
+
+  <div id="info"></div>
+
+  <h3 style="margin-top: 24px; color: #a78bfa;">📎 مدارک ثبت‌شده</h3>
+  <div id="docs"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.12.0/dist/ethers.umd.min.js"></script>
+<script>
+const REGISTRY = '0x...'; // آدرس قرارداد خود را اینجا بگذارید
+const ABI = [
+  'function getCompany() view returns (string,string,string,string,string,string,uint256,string,bytes32,uint256,bool)',
+  'function getDocumentCount() view returns (uint256)',
+  'function getDocument(uint256) view returns (string)',
+  'function getShareholderCount() view returns (uint256)',
+  'function shareholders(uint256) view returns (string,string,uint256,uint256)'
+];
+
+async function load() {
+  const provider = new ethers.JsonRpcProvider('http://localhost:8545');
+  const c = new ethers.Contract(REGISTRY, ABI, provider);
+
+  const info = await c.getCompany();
+  const company = {
+    name: info[0], type: info[1], reg: info[2], nid: info[3],
+    date: info[4], addr: info[5],
+    capital: ethers.formatUnits(info[6], 0),
+    md: info[7], hash: info[8],
+    anchored: new Date(Number(info[9]) * 1000).toLocaleString('fa-IR'),
+    verified: info[10]
+  };
+
+  document.getElementById('info').innerHTML = `
+    <div class="row"><span class="label">نام</span><span class="value">${company.name}</span></div>
+    <div class="row"><span class="label">نوع</span><span class="value">${company.type}</span></div>
+    <div class="row"><span class="label">شماره ثبت</span><span class="value">${company.reg}</span></div>
+    <div class="row"><span class="label">شناسه ملی</span><span class="value">${company.nid}</span></div>
+    <div class="row"><span class="label">تاریخ ثبت</span><span class="value">${company.date}</span></div>
+    <div class="row"><span class="label">سرمایه</span><span class="value">${Number(company.capital).toLocaleString('fa-IR')} ریال</span></div>
+    <div class="row"><span class="label">مدیرعامل</span><span class="value">${company.md}</span></div>
+    <div class="row"><span class="label">Anchor شده در</span><span class="value">${company.anchored}</span></div>
+    <div style="margin-top: 16px;">
+      <div class="label">هش مدارک (Keccak-256):</div>
+      <div class="hash">${company.hash}</div>
+    </div>
+  `;
+
+  const count = Number(await c.getDocumentCount());
+  let docsHtml = '';
+  for (let i = 0; i < count; i++) {
+    const cid = await c.getDocument(i);
+    docsHtml += `
+      <div class="row">
+        <span class="label">مدرک #${i + 1}</span>
+        <a class="value" href="https://ipfs.io/ipfs/${cid}" target="_blank">مشاهده روی IPFS ↗</a>
+      </div>`;
+  }
+  document.getElementById('docs').innerHTML = docsHtml;
+}
+
+load().catch(e => {
+  document.getElementById('info').innerHTML =
+    `<p style="color: #f87171;">خطا در بارگذاری: ${e.message}</p>`;
+});
+</script>
+</body>
+</html>
+```
+
+---
+
+🚦 ۶. مراحل اجرای کامل (چک‌لیست)
+
+```bash
+# ۱. نصب پکیج IPFS
+cd ~/apz-chain
+npm install ipfs-http-client
+
+# ۲. قرار دادن فایل‌های تصویری مدارک
+#    (اساسنامه.jpg، صورتجلسه.jpg، آگهی.jpg)
+mkdir -p legal-docs
+# فایل‌ها را با نام‌های مشخص کپی کنید:
+# cp /sdcard/Download/asasname.jpg legal-docs/01-asasname.jpg
+# cp /sdcard/Download/soorat.jpg legal-docs/02-soorat-jalase.jpg
+# cp /sdcard/Download/agahi1.jpg legal-docs/03-agahi-tasis.jpg
+# cp /sdcard/Download/agahi2.jpg legal-docs/04-agahi-rouznameh.jpg
+
+# ۳. آپلود به IPFS
+node scripts/upload-docs.js
+# → فایل legal-docs/cids.json ساخته می‌شود
+
+# ۴. Deploy و anchor روی بلاکچین
+npx hardhat run scripts/anchor-company.js --network localhost
+# → فایل legal-docs/contract-address.json ساخته می‌شود
+
+# ۵. باز کردن صفحه تأیید
+python -m http.server 8080
+# → http://localhost:8080/verify.html
+```
+
+---
+
+⚖️ ۷. نکات حقوقی مهم
+
+مورد توضیح
+حریم خصوصی کد ملی و امضاها روی IPFS عمومی قرار می‌گیرند. اگر می‌خواهید خصوصی باشد، فایل‌ها را رمزنگاری کنید و کلید را جداگانه نگه دارید
+مدارک رسمی فقط تصویر مدارک آپلود شود — اصل مدارک پیش دفتر ثبت شرکت باقی می‌ماند
+IPFS Pin IPFS فایل‌ها را برای همیشه نگه نمی‌دارد — حتماً از Pinata یا web3.storage برای pin کردن استفاده کنید
+قانون تجارت ثبت مدارک روی بلاکچین جایگزین ثبت رسمی نیست — مکمل آن است
+امضای دیجیتال برای اعتبار حقوقی بیشتر، می‌توانید مدارک را با GPG امضا کنید
+
+---
+
+🔐 ۸. نسخه‌ی رمزنگاری‌شده (اختیاری، برای مدارک حساس)
+
+اگر می‌خواهید مدارک خصوصی بمانند:
+
+```bash
+# رمزنگاری قبل از آپلود
+openssl enc -aes-256-cbc -salt -in legal-docs/01-asasname.jpg \
+  -out legal-docs/01-asasname.jpg.enc -k "PASSWORD_STRONG"
+
+# آپلود فقط فایل .enc روی IPFS
+# کلید رمزنگاری را در جای امن (نه روی زنجیره) نگه دارید
+```
+
+روی زنجیره فقط هش فایل رمزشده ثبت می‌شود — نه محتوای اصلی.
+
+---
+
+📌 خلاصه
+
+```
+✅ داده‌های حقوقی از تصاویر استخراج شد
+✅ قرارداد CompanyRegistry.sol آماده است
+✅ اسکریپت آپلود IPFS آماده است
+✅ اسکریپت Anchor روی زنجیره آماده است
+✅ صفحه‌ی تأیید عمومی آماده است
+✅ نکات حقوقی و حریم خصوصی مشخص شده
+```
