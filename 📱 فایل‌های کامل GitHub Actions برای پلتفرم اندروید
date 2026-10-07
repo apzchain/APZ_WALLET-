@@ -1,0 +1,934 @@
+📱 فایل‌های کامل GitHub Actions برای پلتفرم اندروید
+
+در ادامه، مجموعه‌ی کامل و آماده‌ی commit از Workflowهای GitHub Actions برای پلتفرم اندروید پروژه APZ Wallet را ارائه می‌دهم. این فایل‌ها بر اساس ساختار پروژه‌ی شما (android/ با Kotlin + Jetpack Compose) طراحی شده‌اند.
+
+---
+
+📁 ساختار فایل‌ها
+
+```
+.github/
+└── workflows/
+    ├── android-ci.yml           # CI اصلی (PR + Push)
+    ├── android-release.yml      # انتشار رسمی با امضا
+    ├── android-nightly.yml      # بیلد شبانه
+    └── android-ui-tests.yml     # ماتریس تست UI
+```
+
+---
+
+1️⃣ .github/workflows/android-ci.yml
+
+CI اصلی که روی هر PR و Push به main/develop اجرا می‌شود.
+
+```yaml
+name: Android CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-ci.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+env:
+  JAVA_VERSION: '17'
+  GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError" -Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true'
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1: Lint + Static Analysis
+  # ─────────────────────────────────────────────
+  lint:
+    name: Lint & Static Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.android
+            ~/.gradle
+          key: android-sdk-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*') }}
+          restore-keys: android-sdk-${{ runner.os }}-
+
+      - name: Grant execute permission to gradlew
+        run: chmod +x gradlew
+
+      - name: Run Android Lint
+        run: ./gradlew :app:lintDebug --stacktrace
+
+      - name: Run Detekt (Kotlin Static Analysis)
+        run: ./gradlew detekt --stacktrace
+        continue-on-error: false
+
+      - name: Upload Lint Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-lint-reports
+          path: |
+            android/app/build/reports/lint-results-*.html
+            android/app/build/reports/lint-results-*.xml
+            android/**/build/reports/detekt/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Annotate Lint Results
+        if: always() && github.event_name == 'pull_request'
+        uses: yutailang0119/action-android-lint@v4
+        with:
+          report-path: android/app/build/reports/lint-results-*.xml
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────
+  # Job 2: Unit Tests
+  # ─────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Publish Test Report
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'android/**/build/test-results/testDebugUnitTest/*.xml'
+          check_name: Unit Test Results
+          require_tests: true
+          detailed_summary: true
+          include_passed: false
+          fail_on_failure: true
+
+      - name: Upload Unit Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-unit-test-reports
+          path: |
+            android/**/build/reports/tests/**
+            android/**/build/test-results/**
+          retention-days: 14
+
+  # ─────────────────────────────────────────────
+  # Job 3: Build Debug APK
+  # ─────────────────────────────────────────────
+  build-debug:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [ lint ]
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apz-wallet-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────
+  # Job 4: Dependency Review (فقط روی PR)
+  # ─────────────────────────────────────────────
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  # ─────────────────────────────────────────────
+  # Job 5: Gate (نتیجه نهایی)
+  # ─────────────────────────────────────────────
+  ci-success:
+    name: Android CI Success
+    runs-on: ubuntu-latest
+    needs: [ lint, unit-tests, build-debug ]
+    if: always()
+    steps:
+      - name: Check all jobs status
+        run: |
+          if [[ "${{ needs.lint.result }}" != "success" ]]; then
+            echo "❌ Lint failed"
+            exit 1
+          fi
+          if [[ "${{ needs.unit-tests.result }}" != "success" ]]; then
+            echo "❌ Unit tests failed"
+            exit 1
+          fi
+          if [[ "${{ needs.build-debug.result }}" != "success" ]]; then
+            echo "❌ Build failed"
+            exit 1
+          fi
+          echo "✅ All Android CI jobs passed"
+```
+
+---
+
+2️⃣ .github/workflows/android-release.yml
+
+بیلد ریلیز امضاشده + انتشار در GitHub Releases + آپلود در Play Store (اختیاری).
+
+```yaml
+name: Android Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'android-v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Version Name (مثال: 1.2.0)'
+        required: true
+        type: string
+      version_code:
+        description: 'Version Code (عدد صحیح)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release Notes'
+        required: false
+        type: string
+        default: 'Release build of APZ Wallet'
+
+permissions:
+  contents: write
+
+env:
+  JAVA_VERSION: '17'
+  GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" -Dorg.gradle.daemon=false'
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1: Build Signed APK + AAB
+  # ─────────────────────────────────────────────
+  build-release:
+    name: Build Signed Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      apk_sha256: ${{ steps.checksums.outputs.apk_sha256 }}
+      aab_sha256: ${{ steps.checksums.outputs.aab_sha256 }}
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Determine Version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION_NAME="${{ inputs.version_name }}"
+            VERSION_CODE="${{ inputs.version_code }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION_NAME="${TAG#android-v}"
+            VERSION_NAME="${VERSION_NAME#v}"
+            VERSION_CODE="$(date +%s)"
+          fi
+          echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "version_code=${VERSION_CODE}" >> $GITHUB_OUTPUT
+          echo "📦 Version: ${VERSION_NAME} (${VERSION_CODE})"
+
+      # ──────────────────────────────────────
+      # رمزگشایی Keystore از Secrets
+      # ──────────────────────────────────────
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" ]]; then
+            echo "❌ ANDROID_KEYSTORE_BASE64 secret is not set"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > app/apz-release.keystore
+          echo "✅ Keystore decoded"
+
+      - name: Create keystore.properties
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          cat > keystore.properties <<EOF
+          storeFile=apz-release.keystore
+          storePassword=${KEYSTORE_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          keyPassword=${KEY_PASSWORD}
+          EOF
+          chmod 600 keystore.properties
+
+      - name: Inject Version into build.gradle.kts
+        run: |
+          sed -i "s/versionName = \".*\"/versionName = \"${{ steps.version.outputs.version_name }}\"/" app/build.gradle.kts
+          sed -i "s/versionCode = [0-9]*/versionCode = ${{ steps.version.outputs.version_code }}/" app/build.gradle.kts
+          grep -E "versionName|versionCode" app/build.gradle.kts
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Build Release AAB
+        run: ./gradlew bundleRelease --stacktrace
+
+      - name: Build Release APK (Split per ABI)
+        run: ./gradlew assembleRelease -Psplits=true --stacktrace
+        continue-on-error: true
+
+      - name: Verify Signatures
+        run: |
+          BUILD_TOOLS=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -1)
+          APKSIGNER="$ANDROID_HOME/build-tools/${BUILD_TOOLS}/apksigner"
+          APK=$(find app/build/outputs/apk/release -name "*.apk" ! -name "*unaligned*" | head -1)
+          echo "🔍 Verifying: $APK"
+          $APKSIGNER verify --verbose --print-certs "$APK"
+
+      - name: Generate Checksums
+        id: checksums
+        run: |
+          mkdir -p ../release-artifacts
+          APK=$(find app/build/outputs/apk/release -name "*.apk" ! -name "*unaligned*" | head -1)
+          AAB=$(find app/build/outputs/bundle/release -name "*.aab" | head -1)
+
+          APK_SHA=$(sha256sum "$APK" | awk '{print $1}')
+          AAB_SHA=$(sha256sum "$AAB" | awk '{print $1}')
+
+          echo "apk_sha256=${APK_SHA}" >> $GITHUB_OUTPUT
+          echo "aab_sha256=${AAB_SHA}" >> $GITHUB_OUTPUT
+
+          # کپی به پوشه‌ی release
+          cp "$APK" "../release-artifacts/apz-wallet-${{ steps.version.outputs.version_name }}.apk"
+          cp "$AAB" "../release-artifacts/apz-wallet-${{ steps.version.outputs.version_name }}.aab"
+
+          # فایل checksum
+          cd ../release-artifacts
+          sha256sum *.apk *.aab > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Cleanup Secrets
+        if: always()
+        run: |
+          rm -f app/apz-release.keystore keystore.properties || true
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apz-wallet-release-${{ steps.version.outputs.version_name }}
+          path: release-artifacts/*
+          retention-days: 90
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────
+  # Job 2: Publish to GitHub Releases
+  # ─────────────────────────────────────────────
+  publish-github:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-release
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: apz-wallet-release-${{ needs.build-release.outputs.version_name }}
+          path: ./artifacts
+
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          VERSION="${{ needs.build-release.outputs.version_name }}"
+          cat > release-notes.md <<EOF
+          # 📱 APZ Wallet — Android v${VERSION}
+
+          **Lightweight • Secure • Open-Source**
+          Official Wallet for APZ Chain • Built by Khalil Heyrani
+
+          ## 📦 Downloads
+
+          | File | SHA-256 |
+          |------|---------|
+          | \`apz-wallet-${VERSION}.apk\` | \`${{ needs.build-release.outputs.apk_sha256 }}\` |
+          | \`apz-wallet-${VERSION}.aab\` | \`${{ needs.build-release.outputs.aab_sha256 }}\` |
+
+          ## 🔐 Security
+          - ✅ APK signed with release keystore
+          - ✅ Signature verified via apksigner
+          - ✅ SHA-256 checksums included
+
+          ## 📥 Installation
+          1. Download the APK from below
+          2. Verify SHA-256: \`sha256sum apz-wallet-${VERSION}.apk\`
+          3. Enable "Install from unknown sources" if needed
+          4. Install and launch
+
+          ---
+          *Built with ❤️ by Khalil Heyrani — APZ Chain*
+          EOF
+          cat release-notes.md
+
+      - name: Create / Update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "APZ Wallet Android v${{ needs.build-release.outputs.version_name }}"
+          body_path: release-notes.md
+          files: |
+            artifacts/*.apk
+            artifacts/*.aab
+            artifacts/SHA256SUMS.txt
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─────────────────────────────────────────────
+  # Job 3: Upload to Google Play (اختیاری)
+  # ─────────────────────────────────────────────
+  publish-play-store:
+    name: Publish to Google Play (Internal Track)
+    runs-on: ubuntu-latest
+    needs: build-release
+    if: startsWith(github.ref, 'refs/tags/')
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download AAB
+        uses: actions/download-artifact@v4
+        with:
+          name: apz-wallet-release-${{ needs.build-release.outputs.version_name }}
+          path: ./artifacts
+
+      - name: Upload to Google Play
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+          packageName: org.apzchain.wallet
+          releaseFiles: artifacts/*.aab
+          track: internal
+          status: completed
+          whatsNewDirectory: android/fastlane/metadata/android/en-US/changelogs
+        continue-on-error: true
+```
+
+---
+
+3️⃣ .github/workflows/android-nightly.yml
+
+بیلد شبانه برای تست‌های طولانی و ساخت APK شبانه.
+
+```yaml
+name: Android Nightly
+
+on:
+  schedule:
+    # هر شب ساعت 02:00 UTC (06:30 تهران)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  JAVA_VERSION: '17'
+
+jobs:
+  nightly-build:
+    name: Nightly Debug Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Rename APK
+        run: |
+          DATE=$(date +%Y%m%d)
+          APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          mkdir -p ../nightly
+          cp "$APK" "../nightly/apz-wallet-nightly-${DATE}.apk"
+          cd ../nightly
+          sha256sum *.apk > SHA256SUMS.txt
+
+      - name: Delete Old Nightly Tag
+        run: |
+          git push origin :refs/tags/nightly 2>/dev/null || true
+
+      - name: Create Nightly Tag
+        run: |
+          git tag -f nightly
+          git push -f origin nightly
+
+      - name: Publish Nightly Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: "🌙 APZ Wallet Nightly — ${{ github.run_number }}"
+          body: |
+            Automated nightly build from `${{ github.sha }}`
+            Built on: ${{ github.event.head_commit.timestamp || github.run_started_at }}
+          files: nightly/*.apk
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+---
+
+4️⃣ .github/workflows/android-ui-tests.yml
+
+ماتریس تست UI روی چند API level و اندازه‌ی صفحه (طبق ماتریس تست پروژه).
+
+```yaml
+name: Android UI Tests Matrix
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'android/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'android/**'
+  workflow_dispatch:
+  schedule:
+    # یکشنبه‌ها ساعت 03:00 UTC
+    - cron: '0 3 * * 0'
+
+concurrency:
+  group: ui-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+
+env:
+  JAVA_VERSION: '17'
+  GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g" -Dorg.gradle.daemon=false'
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1: Instrumented Tests on Matrix
+  # ─────────────────────────────────────────────
+  instrumentation-tests:
+    name: "UI Test — API ${{ matrix.api-level }} (${{ matrix.target }})"
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [ 26, 29, 31, 34 ]
+        target: [ default ]
+        arch: [ x86_64 ]
+        include:
+          - api-level: 34
+            target: google_apis
+            arch: x86_64
+          - api-level: 34
+            target: google_apis_playstore
+            arch: x86_64
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: AVD Cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ matrix.api-level }}-${{ matrix.target }}-${{ matrix.arch }}
+
+      - name: Create AVD & Cache
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD created & cached"
+
+      - name: Run Instrumented Tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          working-directory: android
+          script: |
+            ./gradlew connectedDebugAndroidTest --stacktrace
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-reports-api${{ matrix.api-level }}-${{ matrix.target }}
+          path: |
+            android/app/build/reports/androidTests/**
+            android/app/build/outputs/androidTest-results/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Publish Test Results
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: 'android/**/build/outputs/androidTest-results/connected/**/*.xml'
+          check_name: "UI Tests API ${{ matrix.api-level }} ${{ matrix.target }}"
+          fail_on_failure: false
+          require_tests: false
+
+  # ─────────────────────────────────────────────
+  # Job 2: Screenshot Tests (Roborazzi / Paparazzi)
+  # ─────────────────────────────────────────────
+  screenshot-tests:
+    name: Screenshot Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Run Screenshot Tests
+        run: ./gradlew :app:verifyDebugScreenshots --stacktrace
+        continue-on-error: true
+
+      - name: Upload Screenshot Diffs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-diffs
+          path: |
+            android/**/build/outputs/roborazzi/**
+            android/**/build/reports/screenshots/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ─────────────────────────────────────────────
+  # Job 3: Matrix Summary
+  # ─────────────────────────────────────────────
+  matrix-summary:
+    name: UI Tests Summary
+    runs-on: ubuntu-latest
+    needs: [ instrumentation-tests, screenshot-tests ]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## 🧪 Android UI Test Matrix Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Suite | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Instrumented Tests | ${{ needs.instrumentation-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Screenshot Tests | ${{ needs.screenshot-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+```
+
+---
+
+5️⃣ .github/dependabot.yml (پیشنهاد تکمیلی)
+
+```yaml
+version: 2
+updates:
+  - package-ecosystem: "gradle"
+    directory: "/android"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "android"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      kotlin:
+        patterns:
+          - "org.jetbrains.kotlin*"
+      compose:
+        patterns:
+          - "androidx.compose*"
+      androidx:
+        patterns:
+          - "androidx.*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "chore(ci)"
+```
+
+---
+
+6️⃣ 🔐 Secrets لازم در GitHub
+
+قبل از اجرا، این Secrets را در Settings → Secrets and variables → Actions تنظیم کنید:
+
+Secret توضیح نحوه ساخت
+ANDROID_KEYSTORE_BASE64 فایل keystore به Base64 base64 -w 0 apz-release.keystore
+ANDROID_KEYSTORE_PASSWORD رمز keystore -
+ANDROID_KEY_ALIAS نام alias -
+ANDROID_KEY_PASSWORD رمز alias -
+PLAY_STORE_SERVICE_ACCOUNT_JSON (اختیاری) JSON سرویس‌اکانت Play از Google Cloud Console
+
+ساخت keystore:
+
+```bash
+keytool -genkeypair -v \
+  -keystore apz-release.keystore \
+  -alias apz-wallet \
+  -keyalg RSA -keysize 4096 \
+  -validity 10000 \
+  -storetype PKCS12
+
+# سپس Base64:
+base64 -w 0 apz-release.keystore
+```
+
+---
+
+7️⃣ 📝 تنظیم android/keystore.properties در .gitignore
+
+مطمئن شوید این خطوط در android/.gitignore هستند:
+
+```gitignore
+keystore.properties
+*.keystore
+*.jks
+app/apz-release.keystore
+```
+
+و در android/app/build.gradle.kts:
+
+```kotlin
+import java.util.Properties
+
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) load(keystorePropsFile.inputStream())
+}
+
+android {
+    signingConfigs {
+        create("release") {
+            if (keystorePropsFile.exists()) {
+                storeFile = file(keystoreProps["storeFile"] as String)
+                storePassword = keystoreProps["storePassword"] as String
+                keyAlias = keystoreProps["keyAlias"] as String
+                keyPassword = keystoreProps["keyPassword"] as String
+            }
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+}
+```
+
+---
+
+8️⃣ ✅ چک‌لیست نهایی قبل از commit
+
+☐ تمام ۴ فایل در .github/workflows/ قرار داده شدند
+☐ dependabot.yml در .github/ اضافه شد
+☐ فایل android/app/build.gradle.kts طبق نمونه بالا به‌روز شد
+☐ .gitignore آپدیت شد
+☐ Secrets در GitHub تنظیم شدند
+☐ keystore.properties در لوکال نیست (فقط در CI ساخته می‌شود)
+
+---
+
+9️⃣ 🎯 نتیجه پس از راه‌اندازی
+
+· ✅ هر PR → Lint + Unit Test + Debug APK خودکار
+· ✅ هر تگ v1.2.0 → APK/AAB امضاشده + انتشار GitHub Release + آپلود Play Store
+· ✅ هر شب → Nightly APK
+· ✅ هر هفته → ماتریس کامل UI Tests روی API 26/29/31/34
+· ✅ Dependabot خودکار آپدیت‌ها را PR می‌کند
