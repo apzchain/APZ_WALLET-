@@ -1,0 +1,670 @@
+🚀 راه‌اندازی Fastlane برای انتشار خودکار در Google Play
+
+در ادامه، مجموعه‌ی کامل و آماده‌ی commit از فایل‌های Fastlane برای پروژه‌ی APZ Wallet ارائه می‌دهم که از changelog چندزبانه (FA/EN/DE) پشتیبانی می‌کند.
+
+---
+
+📁 ساختار کامل پوشه Fastlane
+
+```
+android/
+├── fastlane/
+│   ├── Appfile
+│   ├── Fastfile
+│   ├── Pluginfile
+│   └── metadata/
+│       └── android/
+│           ├── en-US/
+│           │   ├── title.txt
+│           │   ├── short_description.txt
+│           │   ├── full_description.txt
+│           │   └── changelogs/
+│           │       ├── default.txt
+│           │       └── 1.txt
+│           ├── fa-IR/
+│           │   ├── title.txt
+│           │   ├── short_description.txt
+│           │   ├── full_description.txt
+│           │   └── changelogs/
+│           │       ├── default.txt
+│           │       └── 1.txt
+│           └── de-DE/
+│               ├── title.txt
+│               ├── short_description.txt
+│               ├── full_description.txt
+│               └── changelogs/
+│                   ├── default.txt
+│                   └── 1.txt
+```
+
+نکته مهم: نام پوشه‌ی changelog باید دقیقاً با versionCode اپلیکیشن مطابقت داشته باشد (مثلاً اگر versionCode = 1 باشد، فایل باید 1.txt نام‌گذاری شود).
+
+---
+
+1️⃣ android/Gemfile
+
+```ruby
+source "https://rubygems.org"
+
+gem "fastlane", "~> 2.220"
+gem "fastlane-plugin-firebase_app_distribution"
+
+plugins_path = File.join(File.dirname(__FILE__), 'fastlane', 'Pluginfile')
+eval_gemfile(plugins_path) if File.exist?(plugins_path)
+```
+
+چرا Gemfile؟ مدیریت نسخه‌ی fastlane و سرعت‌بخشی به نصب در CI.
+
+---
+
+2️⃣ android/fastlane/Appfile
+
+```ruby
+# ─────────────────────────────────────────────
+# Appfile — APZ Wallet
+# Official Wallet for APZ Chain
+# Built by Khalil Heyrani
+# ─────────────────────────────────────────────
+
+json_key_file(ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json")
+package_name("org.apzchain.wallet")
+
+# برای Google Play، از service account استفاده می‌کنیم
+# برای Play Store، role باید "Release Manager" باشد
+```
+
+نکته امنیتی: فایل JSON را در .gitignore قرار دهید و در CI از طریق Secret تزریق کنید.
+
+---
+
+3️⃣ android/fastlane/Fastfile
+
+```ruby
+# ─────────────────────────────────────────────
+# Fastfile — APZ Wallet
+# Multi-Language Fastlane Configuration (FA / EN / DE)
+# ─────────────────────────────────────────────
+
+default_platform(:android)
+
+# زبان‌های پشتیبانی‌شده
+SUPPORTED_LOCALES = ["en-US", "fa-IR", "de-DE"].freeze
+
+platform :android do
+
+  # ═══════════════════════════════════════════
+  # Lane: Build AAB (Release)
+  # ═══════════════════════════════════════════
+  desc "Build Release AAB"
+  lane :build_aab do |options|
+    gradle(
+      task: "bundle",
+      build_type: "Release",
+      properties: {
+        "android.injected.signing.store.file" => options[:store_file] || ENV["ANDROID_KEYSTORE_PATH"],
+        "android.injected.signing.store.password" => options[:store_password] || ENV["ANDROID_KEYSTORE_PASSWORD"],
+        "android.injected.signing.key.alias" => options[:key_alias] || ENV["ANDROID_KEY_ALIAS"],
+        "android.injected.signing.key.password" => options[:key_password] || ENV["ANDROID_KEY_PASSWORD"]
+      }
+    )
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Deploy to Internal Testing
+  # ═══════════════════════════════════════════
+  desc "Deploy AAB to Internal Testing track"
+  lane :deploy_internal do
+    build_aab
+
+    upload_to_play_store(
+      track: "internal",
+      aab: lane_context[SharedValues::GRADLE_AAB_OUTPUT_PATH],
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_metadata: false,
+      skip_upload_changelogs: false,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      validate_only: false
+    )
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Deploy to Closed Testing (Alpha)
+  # ═══════════════════════════════════════════
+  desc "Deploy AAB to Alpha (Closed Testing) track"
+  lane :deploy_alpha do
+    build_aab
+
+    upload_to_play_store(
+      track: "alpha",
+      aab: lane_context[SharedValues::GRADLE_AAB_OUTPUT_PATH],
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_metadata: false,
+      skip_upload_changelogs: false,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      validate_only: false
+    )
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Deploy to Open Testing (Beta)
+  # ═══════════════════════════════════════════
+  desc "Deploy AAB to Beta (Open Testing) track"
+  lane :deploy_beta do
+    build_aab
+
+    upload_to_play_store(
+      track: "beta",
+      aab: lane_context[SharedValues::GRADLE_AAB_OUTPUT_PATH],
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_metadata: false,
+      skip_upload_changelogs: false,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      validate_only: false
+    )
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Promote Internal → Beta → Production
+  # ═══════════════════════════════════════════
+  desc "Promote from Internal to Beta"
+  lane :promote_internal_to_beta do
+    upload_to_play_store(
+      track: "internal",
+      track_promote_to: "beta",
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_metadata: true,
+      skip_upload_changelogs: false,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+
+  desc "Promote from Beta to Production"
+  lane :promote_beta_to_production do |options|
+    upload_to_play_store(
+      track: "beta",
+      track_promote_to: "production",
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_metadata: true,
+      skip_upload_changelogs: false,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Full Release (Internal → Beta → Production)
+  # ═══════════════════════════════════════════
+  desc "Full Release Pipeline: Internal → Beta → Production"
+  lane :release do |options|
+    target_track = options[:track] || "internal"
+
+    UI.message("🚀 Starting APZ Wallet release to #{target_track}...")
+
+    case target_track
+    when "internal"
+      deploy_internal
+    when "alpha"
+      deploy_alpha
+    when "beta"
+      deploy_beta
+    when "production"
+      deploy_internal
+      promote_internal_to_beta
+      promote_beta_to_production
+    else
+      UI.user_error!("❌ Unknown track: #{target_track}")
+    end
+
+    UI.success("✅ APZ Wallet successfully deployed to #{target_track}!")
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Validate Metadata (بدون آپلود)
+  # ═══════════════════════════════════════════
+  desc "Validate all metadata and changelogs without uploading"
+  lane :validate_metadata do
+    upload_to_play_store(
+      track: "internal",
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      validate_only: true
+    )
+    UI.success("✅ Metadata validation passed for #{SUPPORTED_LOCALES.join(', ')}")
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Fetch Metadata from Play Store
+  # ═══════════════════════════════════════════
+  desc "Download current metadata from Google Play"
+  lane :pull_metadata do
+    supply(
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json"
+    )
+    UI.success("✅ Metadata downloaded to fastlane/metadata/android/")
+  end
+end
+```
+
+---
+
+4️⃣ android/fastlane/Pluginfile
+
+```ruby
+# ─────────────────────────────────────────────
+# Pluginfile — APZ Wallet
+# ─────────────────────────────────────────────
+gem "fastlane-plugin-firebase_app_distribution"
+```
+
+---
+
+5️⃣ فایل‌های Changelog چندزبانه
+
+🇬🇧 English — android/fastlane/metadata/android/en-US/changelogs/default.txt
+
+```
+• New: Neon UI with enhanced visuals
+• Improved: Transaction signing speed by 40%
+• Fixed: RPC connection timeout on slow networks
+• Updated: Multi-network support for APZ Chain
+```
+
+🇮🇷 Persian — android/fastlane/metadata/android/fa-IR/changelogs/default.txt
+
+```
+• جدید: رابط کاربری نئونی با جلوه‌های بصری بهبودیافته
+• بهبود: سرعت امضای تراکنش‌ها تا ۴۰٪
+• رفع مشکل: تایم‌اوت اتصال RPC در شبکه‌های کند
+• به‌روزرسانی: پشتیبانی چندشبکه‌ای برای APZ Chain
+```
+
+🇩🇪 German — android/fastlane/metadata/android/de-DE/changelogs/default.txt
+
+```
+• Neu: Neon-Benutzeroberfläche mit verbesserten visuellen Effekten
+• Verbessert: Transaktionssignierungsgeschwindigkeit um 40%
+• Behoben: RPC-Verbindungs-Timeout bei langsamen Netzwerken
+• Aktualisiert: Multi-Netzwerk-Unterstützung für APZ Chain
+```
+
+نکات مهم:
+
+· حداکثر ۵۰۰ کاراکتر برای هر changelog
+· فرمت UTF-8 و متن ساده (بدون Markdown/HTML)
+· فایل باید با versionCode اپلیکیشن مطابقت داشته باشد
+
+فایل changelog مخصوص نسخه‌ی خاص
+
+برای هر نسخه، یک فایل با نام versionCode.txt ایجاد کنید. مثال برای versionCode = 1:
+
+android/fastlane/metadata/android/en-US/changelogs/1.txt
+
+```
+• First official release of APZ Wallet
+• Local key generation with no server dependency
+• Multi-network RPC support for APZ Chain
+```
+
+android/fastlane/metadata/android/fa-IR/changelogs/1.txt
+
+```
+• اولین نسخه رسمی کیف پول APZ
+• تولید کلید محلی بدون وابستگی به سرور
+• پشتیبانی از RPC چندشبکه‌ای برای APZ Chain
+```
+
+android/fastlane/metadata/android/de-DE/changelogs/1.txt
+
+```
+• Erste offizielle Version der APZ Wallet
+• Lokale Schlüsselgenerierung ohne Serverabhängigkeit
+• Multi-Netzwerk-RPC-Unterstützung für APZ Chain
+```
+
+---
+
+6️⃣ فایل‌های Metadata چندزبانه
+
+🇬🇧 English — android/fastlane/metadata/android/en-US/
+
+title.txt (حداکثر ۳۰ کاراکتر):
+
+```
+APZ Wallet
+```
+
+short_description.txt (حداکثر ۸۰ کاراکتر):
+
+```
+Lightweight, secure & open-source wallet for APZ Chain.
+```
+
+full_description.txt (حداکثر ۴۰۰۰ کاراکتر):
+
+```
+APZ Wallet — Official Wallet for APZ Chain
+
+🔐 Local key generation (no server dependency)
+📝 Local transaction signing
+🌐 Multi-network RPC support
+⚡ Neon UI for Android
+🧩 Modular architecture
+
+Built with ❤️ by Khalil Heyrani
+```
+
+🇮🇷 Persian — android/fastlane/metadata/android/fa-IR/
+
+title.txt:
+
+```
+کیف پول APZ
+```
+
+short_description.txt:
+
+```
+کیف پول سبک، امن و متن‌باز برای شبکه APZ.
+```
+
+full_description.txt:
+
+```
+کیف پول APZ — کیف پول رسمی شبکه APZ
+
+🔐 تولید کلید محلی بدون وابستگی به سرور
+📝 امضای تراکنش‌ها روی دستگاه
+🌐 پشتیبانی از RPC چندشبکه‌ای
+⚡ رابط کاربری نئونی برای اندروید
+🧩 معماری ماژولار
+
+ساخته‌شده با ❤️ توسط خلیل حیرانی
+```
+
+🇩🇪 German — android/fastlane/metadata/android/de-DE/
+
+title.txt:
+
+```
+APZ Wallet
+```
+
+short_description.txt:
+
+```
+Leichte, sichere & Open-Source-Wallet für APZ Chain.
+```
+
+full_description.txt:
+
+```
+APZ Wallet — Offizielle Wallet für APZ Chain
+
+🔐 Lokale Schlüsselgenerierung (keine Serverabhängigkeit)
+📝 Lokale Transaktionssignierung
+🌐 Multi-Netzwerk-RPC-Unterstützung
+⚡ Neon-Benutzeroberfläche für Android
+🧩 Modulare Architektur
+
+Mit ❤️ erstellt von Khalil Heyrani
+```
+
+---
+
+7️⃣ GitHub Actions Workflow — android-release.yml (به‌روزرسانی‌شده)
+
+```yaml
+name: Android Release (Fastlane → Play Store)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'android-v*.*.*'
+  workflow_dispatch:
+    inputs:
+      track:
+        description: 'Play Store track (internal/alpha/beta/production)'
+        required: true
+        default: 'internal'
+        type: choice
+        options:
+          - internal
+          - alpha
+          - beta
+          - production
+
+permissions:
+  contents: write
+
+env:
+  JAVA_VERSION: '17'
+  RUBY_VERSION: '3.2'
+  GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g" -Dorg.gradle.daemon=false'
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1: Deploy to Google Play via Fastlane
+  # ─────────────────────────────────────────────
+  deploy-to-play-store:
+    name: Deploy to Play Store (${{ github.event.inputs.track || 'internal' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Ruby ${{ env.RUBY_VERSION }}
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: android
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      # ──────────────────────────────────────
+      # Decode Keystore
+      # ──────────────────────────────────────
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > apz-release.keystore
+          echo "✅ Keystore decoded"
+
+      # ──────────────────────────────────────
+      # Decode Play Store Service Account JSON
+      # ──────────────────────────────────────
+      - name: Decode Play Store Credentials
+        env:
+          PLAY_STORE_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p fastlane
+          echo "$PLAY_STORE_JSON" > fastlane/play-store-credentials.json
+          echo "✅ Play Store credentials decoded"
+
+      # ──────────────────────────────────────
+      # Run Fastlane
+      # ──────────────────────────────────────
+      - name: Run Fastlane Deploy
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/apz-release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PLAY_STORE_JSON_KEY_PATH: ${{ github.workspace }}/android/fastlane/play-store-credentials.json
+          LC_ALL: en_US.UTF-8
+          LANG: en_US.UTF-8
+        run: |
+          bundle exec fastlane android release track:${{ github.event.inputs.track || 'internal' }}
+
+      # ──────────────────────────────────────
+      # Cleanup Secrets
+      # ──────────────────────────────────────
+      - name: Cleanup Secrets
+        if: always()
+        run: |
+          rm -f apz-release.keystore fastlane/play-store-credentials.json || true
+
+  # ─────────────────────────────────────────────
+  # Job 2: Validate Metadata Only (DRY RUN)
+  # ─────────────────────────────────────────────
+  validate-metadata:
+    name: Validate Metadata (Dry Run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request'
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: android
+
+      - name: Decode Play Store Credentials
+        env:
+          PLAY_STORE_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p fastlane
+          echo "$PLAY_STORE_JSON" > fastlane/play-store-credentials.json
+
+      - name: Validate Metadata
+        env:
+          PLAY_STORE_JSON_KEY_PATH: ${{ github.workspace }}/android/fastlane/play-store-credentials.json
+          LC_ALL: en_US.UTF-8
+          LANG: en_US.UTF-8
+        run: |
+          bundle exec fastlane android validate_metadata
+
+      - name: Cleanup
+        if: always()
+        run: rm -f fastlane/play-store-credentials.json
+```
+
+---
+
+8️⃣ 🔐 Secrets لازم در GitHub
+
+Secret توضیح
+ANDROID_KEYSTORE_BASE64 فایل keystore به Base64
+ANDROID_KEYSTORE_PASSWORD رمز keystore
+ANDROID_KEY_ALIAS نام alias
+ANDROID_KEY_PASSWORD رمز alias
+PLAY_STORE_SERVICE_ACCOUNT_JSON JSON سرویس‌اکانت Google Play
+
+ساخت Service Account JSON:
+
+1. به Google Cloud Console بروید
+2. یک Service Account جدید بسازید (مثلاً fastlane-supply)
+3. به تب Keys بروید → Add Key → Create New Key → JSON
+4. فایل JSON دانلود شده را در Secret ذخیره کنید
+5. در Google Play Console → Users & Permissions → Service Account را با نقش Release Manager دعوت کنید
+
+---
+
+9️⃣ 🛠️ راه‌اندازی اولیه (اجرای محلی)
+
+```bash
+# 1. نصب fastlane
+cd android
+gem install fastlane --verbose
+
+# 2. نصب وابستگی‌ها
+bundle install
+
+# 3. مقداردهی اولیه (فقط بار اول)
+fastlane init
+
+# 4. دریافت metadata فعلی از Play Store
+bundle exec fastlane android pull_metadata
+
+# 5. اعتبارسنجی metadata (بدون آپلود)
+bundle exec fastlane android validate_metadata
+
+# 6. آپلود به Internal Testing
+bundle exec fastlane android deploy_internal
+
+# 7. ارتقاء به Beta
+bundle exec fastlane android promote_internal_to_beta
+
+# 8. انتشار نهایی
+bundle exec fastlane android promote_beta_to_production
+```
+
+---
+
+🔟 📝 نکات تکمیلی
+
+.gitignore (به‌روزرسانی):
+
+```gitignore
+# Fastlane secrets
+android/fastlane/play-store-credentials.json
+android/fastlane/report.xml
+android/fastlane/Preview.html
+android/fastlane/screenshots/**/*.png
+android/fastlane/test_output/
+android/apz-release.keystore
+android/keystore.properties
+```
+
+ساختار Changelog برای هر نسخه:
+
+versionCode فایل changelog
+1 changelogs/1.txt
+2 changelogs/2.txt
+100 changelogs/100.txt
+default changelogs/default.txt (پشتیبان)
+
+فایل default.txt به‌عنوان changelog پیش‌فرض استفاده می‌شود اگر فایل مخصوص versionCode وجود نداشته باشد.
+
+📌 محدودیت‌های Google Play:
+
+فیلد حداکثر کاراکتر
+Title 30
+Short Description 80
+Full Description 4000
+Changelog 500
+
+✅ چک‌لیست نهایی:
+
+☐ Gemfile در android/ ایجاد شد
+☐ پوشه‌ی fastlane/ با Appfile، Fastfile و Pluginfile ساخته شد
+☐ پوشه‌ی metadata/android/ با سه لوکال (en-US, fa-IR, de-DE) ایجاد شد
+☐ فایل‌های title.txt, short_description.txt, full_description.txt برای هر زبان
+☐ پوشه‌ی changelogs/ با فایل default.txt و فایل‌های مخصوص versionCode
+☐ Secrets در GitHub تنظیم شدند
+☐ Service Account در Play Console با نقش Release Manager دعوت شد
+☐ fastlane validate_metadata با موفقیت اجرا شد
+
+---
