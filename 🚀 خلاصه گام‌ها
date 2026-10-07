@@ -1,0 +1,12 @@
+```bash
+# کل فرآیند از صفر تا APK:
+npx @react-native-community/cli init APZChain --version 0.76.0
+cd APZChain
+npm install ethers @walletconnect/react-native-compat @walletconnect/react-native-dapp \
+  @react-native-async-storage/async-storage react-native-get-random-values \
+  @react-native-community/netinfo react-native-webview @react-native-clipboard/clipboard
+# فایل‌های بالا رو جایگزین کن (App.tsx, build.gradle, AndroidManifest.xml)
+cd android/app && keytool -genkeypair -v -storetype PKCS12 -keystore apz-release.keystore -alias apz-key -keyalg RSA -keysize 2048 -validity 10000
+cd ../.. && cd android && ./gradlew assembleRelease
+# ✅ APK آماده: android/app/build/outputs/apk/release/app-release.apk
+```
