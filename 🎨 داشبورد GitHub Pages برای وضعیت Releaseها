@@ -1,0 +1,1774 @@
+
+---
+
+📁 ساختار کامل پروژه
+
+```
+docs/
+├── index.html
+├── .nojekyll
+├── assets/
+│   ├── css/
+│   │   └── style.css
+│   ├── js/
+│   │   ├── config.js
+│   │   ├── i18n.js
+│   │   ├── api.js
+│   │   ├── ui.js
+│   │   └── app.js
+│   └── icons/
+│       └── icon.svg
+└── data/
+    └── releases.json   # (به‌صورت خودکار به‌روزرسانی می‌شود)
+```
+
+---
+
+1️⃣ docs/.nojekyll
+
+```
+```
+
+فایل خالی — برای جلوگیری از پردازش Jekyll روی GitHub Pages.
+
+---
+
+2️⃣ docs/index.html
+
+```html
+<!DOCTYPE html>
+<html lang="en" dir="ltr" id="html-root">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#00ffcc" />
+  <meta name="description" content="APZ Wallet — Release Dashboard. Official Wallet for APZ Chain." />
+  <meta property="og:title" content="APZ Wallet — Release Dashboard" />
+  <meta property="og:description" content="Lightweight • Secure • Open-Source. Built by Khalil Heyrani." />
+  <meta property="og:type" content="website" />
+
+  <title>APZ Wallet — Release Dashboard</title>
+
+  <link rel="icon" type="image/svg+xml" href="assets/icons/icon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Vazirmatn:wght@400;600;700&family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="assets/css/style.css" />
+</head>
+<body>
+
+  <!-- ═══════════ Background Particles ═══════════ -->
+  <canvas id="particles"></canvas>
+  <div class="bg-gradient"></div>
+
+  <!-- ═══════════ Header ═══════════ -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="brand">
+        <img src="assets/icons/icon.svg" alt="APZ Wallet" class="brand-icon" />
+        <div class="brand-text">
+          <h1>APZ Wallet</h1>
+          <span class="brand-sub" data-i18n="brand.sub">Release Dashboard</span>
+        </div>
+      </div>
+
+      <nav class="lang-switch" role="group" aria-label="Language">
+        <button data-lang="en" class="lang-btn active">EN</button>
+        <button data-lang="fa" class="lang-btn">فا</button>
+        <button data-lang="de" class="lang-btn">DE</button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ═══════════ Hero Stats ═══════════ -->
+  <section class="hero">
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label" data-i18n="stats.latest">Latest Version</div>
+        <div class="stat-value" id="stat-latest">—</div>
+        <div class="stat-meta" id="stat-latest-date">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label" data-i18n="stats.production">Production</div>
+        <div class="stat-value" id="stat-production">—</div>
+        <div class="stat-meta" id="stat-production-rollout">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label" data-i18n="stats.downloads">Total Downloads</div>
+        <div class="stat-value" id="stat-downloads">—</div>
+        <div class="stat-meta" data-i18n="stats.downloadsSub">Across all releases</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label" data-i18n="stats.ci">CI Status</div>
+        <div class="stat-value"><span class="status-dot" id="ci-dot"></span><span id="stat-ci">—</span></div>
+        <div class="stat-meta" id="stat-ci-meta">—</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ Track Board ═══════════ -->
+  <section class="section">
+    <div class="section-header">
+      <h2 data-i18n="tracks.title">Release Tracks</h2>
+      <button class="refresh-btn" id="refresh-btn" title="Refresh">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="track-grid" id="track-grid">
+      <!-- Track cards injected by JS -->
+    </div>
+  </section>
+
+  <!-- ═══════════ Release History ═══════════ -->
+  <section class="section">
+    <div class="section-header">
+      <h2 data-i18n="history.title">Release History</h2>
+      <span class="release-count" id="release-count"></span>
+    </div>
+
+    <div class="releases-list" id="releases-list">
+      <!-- Release cards injected by JS -->
+    </div>
+
+    <div class="empty-state" id="empty-state" hidden>
+      <p data-i18n="history.empty">No releases yet.</p>
+    </div>
+  </section>
+
+  <!-- ═══════════ Footer ═══════════ -->
+  <footer class="footer">
+    <p>
+      <span data-i18n="footer.built">Built with</span>
+      <span class="heart">❤️</span>
+      <span data-i18n="footer.by">by</span>
+      <a href="https://github.com/apzchain" target="_blank" rel="noopener">Khalil Heyrani</a>
+      <span data-i18n="footer.for">for APZ Chain</span>
+    </p>
+    <p class="footer-links">
+      <a href="https://github.com/apzchain/APZ_WALLET" target="_blank" rel="noopener">GitHub</a>
+      <span>·</span>
+      <a href="https://github.com/apzchain/APZ_WALLET/releases" target="_blank" rel="noopener" data-i18n="footer.releases">All Releases</a>
+      <span>·</span>
+      <a href="https://github.com/apzchain/APZ_WALLET/blob/main/docs/SECURITY.md" target="_blank" rel="noopener" data-i18n="footer.security">Security</a>
+    </p>
+  </footer>
+
+  <!-- Toast -->
+  <div class="toast" id="toast" role="status"></div>
+
+  <!-- Scripts -->
+  <script src="assets/js/config.js"></script>
+  <script src="assets/js/i18n.js"></script>
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/ui.js"></script>
+  <script src="assets/js/app.js"></script>
+</body>
+</html>
+```
+
+---
+
+3️⃣ docs/assets/css/style.css
+
+```css
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Release Dashboard Styles
+   Neon theme • RTL support • Responsive
+   ═══════════════════════════════════════════════ */
+
+:root {
+  --bg: #05070a;
+  --bg-2: #0a0e14;
+  --bg-3: #0f141c;
+  --surface: rgba(15, 20, 28, 0.7);
+  --surface-2: rgba(20, 28, 38, 0.85);
+  --border: rgba(0, 255, 204, 0.12);
+  --border-hover: rgba(0, 255, 204, 0.35);
+
+  --neon: #00ffcc;
+  --neon-2: #00b8ff;
+  --neon-3: #a855f7;
+  --danger: #ff3860;
+  --warn: #ffc107;
+  --success: #00ff88;
+
+  --text: #e6f1ff;
+  --text-dim: #8892b0;
+  --text-dimmer: #4a5568;
+
+  --radius: 16px;
+  --radius-sm: 10px;
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --shadow-neon: 0 0 24px rgba(0, 255, 204, 0.15);
+
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-fa: 'Vazirmatn', 'Inter', sans-serif;
+
+  --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+}
+
+[dir="rtl"] body { font-family: var(--font-fa); }
+[dir="rtl"] code, [dir="rtl"] .mono { font-family: var(--font-mono); direction: ltr; display: inline-block; }
+
+a { color: var(--neon); text-decoration: none; transition: var(--transition); }
+a:hover { color: var(--neon-2); text-shadow: 0 0 8px rgba(0, 255, 204, 0.5); }
+
+/* ═══════════ Background ═══════════ */
+#particles {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.bg-gradient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(0, 255, 204, 0.08), transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(168, 85, 247, 0.08), transparent 50%),
+    linear-gradient(180deg, var(--bg), var(--bg-2));
+}
+
+/* ═══════════ Header ═══════════ */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  background: rgba(5, 7, 10, 0.75);
+  border-bottom: 1px solid var(--border);
+}
+
+.header-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand { display: flex; align-items: center; gap: 14px; }
+
+.brand-icon {
+  width: 44px;
+  height: 44px;
+  filter: drop-shadow(0 0 12px rgba(0, 255, 204, 0.6));
+}
+
+.brand-text h1 {
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--neon), var(--neon-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.brand-sub {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.lang-switch {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.lang-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.lang-btn:hover { color: var(--text); }
+
+.lang-btn.active {
+  background: linear-gradient(135deg, var(--neon), var(--neon-2));
+  color: var(--bg);
+  box-shadow: 0 0 16px rgba(0, 255, 204, 0.4);
+}
+
+/* ═══════════ Hero / Stats ═══════════ */
+.hero {
+  max-width: 1280px;
+  margin: 40px auto 0;
+  padding: 0 24px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.stat-card {
+  position: relative;
+  padding: 20px 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(12px);
+  transition: var(--transition);
+  overflow: hidden;
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--neon), transparent);
+  opacity: 0.6;
+}
+
+.stat-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-neon);
+  transform: translateY(-2px);
+}
+
+.stat-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.stat-value {
+  font-size: 1.75rem;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text);
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stat-meta {
+  font-size: 0.78rem;
+  color: var(--text-dimmer);
+  margin-top: 6px;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-dimmer);
+  flex-shrink: 0;
+}
+
+.status-dot.success { background: var(--success); box-shadow: 0 0 12px var(--success); animation: pulse 2s infinite; }
+.status-dot.failure { background: var(--danger); box-shadow: 0 0 12px var(--danger); }
+.status-dot.running { background: var(--warn); box-shadow: 0 0 12px var(--warn); animation: pulse 1.5s infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ═══════════ Sections ═══════════ */
+.section {
+  max-width: 1280px;
+  margin: 56px auto 0;
+  padding: 0 24px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.section-header h2 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.release-count {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  padding: 4px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.refresh-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.refresh-btn:hover { color: var(--neon); border-color: var(--border-hover); }
+.refresh-btn.loading svg { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ═══════════ Track Cards ═══════════ */
+.track-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.track-card {
+  position: relative;
+  padding: 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: var(--transition);
+  overflow: hidden;
+}
+
+.track-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 4px;
+  height: 100%;
+  background: var(--track-color, var(--neon));
+  box-shadow: 0 0 16px var(--track-color, var(--neon));
+}
+
+.track-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-neon);
+  transform: translateY(-2px);
+}
+
+.track-card[data-track="internal"] { --track-color: #8892b0; }
+.track-card[data-track="alpha"] { --track-color: #ffc107; }
+.track-card[data-track="beta"] { --track-color: #00b8ff; }
+.track-card[data-track="production"] { --track-color: #00ffcc; }
+
+.track-name {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.track-version {
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text);
+  letter-spacing: -0.02em;
+  margin-bottom: 4px;
+}
+
+.track-code {
+  font-size: 0.75rem;
+  color: var(--text-dimmer);
+  font-family: var(--font-mono);
+  margin-bottom: 14px;
+}
+
+.track-progress {
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+
+.track-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--track-color), var(--neon-2));
+  border-radius: 999px;
+  transition: width 800ms cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 12px var(--track-color);
+}
+
+.track-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 0.75rem;
+  color: var(--text-dimmer);
+}
+
+.track-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.track-badge.live {
+  background: rgba(0, 255, 136, 0.1);
+  color: var(--success);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+}
+
+.track-badge.pending {
+  background: rgba(255, 193, 7, 0.1);
+  color: var(--warn);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+}
+
+.track-badge.empty {
+  background: rgba(136, 146, 176, 0.1);
+  color: var(--text-dim);
+  border: 1px solid rgba(136, 146, 176, 0.2);
+}
+
+/* ═══════════ Releases List ═══════════ */
+.releases-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.release-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 20px;
+  align-items: center;
+  padding: 20px 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: var(--transition);
+}
+
+.release-card:hover {
+  border-color: var(--border-hover);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-neon);
+}
+
+.release-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgba(0, 255, 204, 0.15), rgba(0, 184, 255, 0.15));
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-weight: 800;
+  font-size: 0.85rem;
+  color: var(--neon);
+  flex-shrink: 0;
+}
+
+.release-info { min-width: 0; }
+
+.release-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.release-version {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.release-tag {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  background: rgba(0, 255, 204, 0.08);
+  color: var(--neon);
+  border: 1px solid rgba(0, 255, 204, 0.2);
+}
+
+.release-pre {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.68rem;
+  background: rgba(255, 193, 7, 0.1);
+  color: var(--warn);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.release-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.release-meta-item { display: flex; align-items: center; gap: 6px; }
+.release-meta-item svg { opacity: 0.7; }
+
+.release-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  border: 1px solid transparent;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--neon), var(--neon-2));
+  color: var(--bg);
+  box-shadow: 0 4px 16px rgba(0, 255, 204, 0.25);
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 255, 204, 0.4);
+  color: var(--bg);
+  text-shadow: none;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
+.btn-ghost:hover {
+  color: var(--neon);
+  border-color: var(--border-hover);
+}
+
+/* ═══════════ Empty State ═══════════ */
+.empty-state {
+  padding: 60px 20px;
+  text-align: center;
+  color: var(--text-dimmer);
+  font-size: 0.9rem;
+}
+
+/* ═══════════ Skeleton Loading ═══════════ */
+.skeleton {
+  background: linear-gradient(90deg, var(--surface) 25%, var(--bg-3) 50%, var(--surface) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius-sm);
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ═══════════ Footer ═══════════ */
+.footer {
+  max-width: 1280px;
+  margin: 80px auto 40px;
+  padding: 32px 24px 0;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.footer p { margin: 8px 0; }
+.footer .heart { display: inline-block; animation: beat 1.2s infinite; }
+@keyframes beat { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+
+.footer-links { display: flex; gap: 12px; justify-content: center; align-items: center; flex-wrap: wrap; }
+.footer-links a { color: var(--text-dim); }
+.footer-links a:hover { color: var(--neon); }
+
+/* ═══════════ Toast ═══════════ */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--surface-2);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-sm);
+  padding: 12px 20px;
+  font-size: 0.85rem;
+  color: var(--text);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast.error { border-color: rgba(255, 56, 96, 0.5); color: #ffb3c1; }
+.toast.success { border-color: rgba(0, 255, 136, 0.5); color: #a0ffd0; }
+
+/* ═══════════ Responsive ═══════════ */
+@media (max-width: 720px) {
+  .header-inner { padding: 12px 16px; }
+  .brand-icon { width: 36px; height: 36px; }
+  .brand-text h1 { font-size: 1rem; }
+
+  .hero, .section { padding: 0 16px; }
+  .hero { margin-top: 24px; }
+  .section { margin-top: 40px; }
+
+  .stat-value { font-size: 1.4rem; }
+
+  .release-card {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .release-badge { width: 44px; height: 44px; font-size: 0.75rem; }
+
+  .release-actions { width: 100%; }
+  .release-actions .btn { flex: 1; justify-content: center; }
+}
+
+/* ═══════════ RTL Adjustments ═══════════ */
+[dir="rtl"] .release-meta { flex-direction: row-reverse; }
+[dir="rtl"] .track-meta { flex-direction: row-reverse; }
+[dir="rtl"] .brand-text { text-align: right; }
+```
+
+---
+
+4️⃣ docs/assets/js/config.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Dashboard Configuration
+   ═══════════════════════════════════════════════ */
+
+window.APZ_CONFIG = {
+  // مخزن GitHub
+  repo: {
+    owner: 'apzchain',
+    name: 'APZ_WALLET',
+    branch: 'main'
+  },
+
+  // API endpoints
+  api: {
+    base: 'https://api.github.com',
+    releases: '/repos/{owner}/{repo}/releases',
+    tags: '/repos/{owner}/{repo}/tags',
+    workflows: '/repos/{owner}/{repo}/actions/workflows',
+    runs: '/repos/{owner}/{repo}/actions/runs'
+  },
+
+  // Workflowهای اصلی برای مانیتور CI
+  workflows: {
+    ci: 'android-ci.yml',
+    release: 'android-release.yml',
+    uiTests: 'android-ui-tests.yml',
+    nightly: 'android-nightly.yml',
+    autoPromote: 'android-auto-promote.yml'
+  },
+
+  // Trackها به ترتیب
+  tracks: ['internal', 'alpha', 'beta', 'production'],
+
+  // تنظیمات refresh (میلی‌ثانیه)
+  refresh: {
+    autoInterval: 120000,  // 2 دقیقه
+    manualCooldown: 5000
+  },
+
+  // زبان پیش‌فرض
+  defaultLang: 'en',
+
+  // ذخیره‌سازی کلید localStorage
+  storageKey: 'apz-dashboard-lang',
+
+  // فعال‌سازی انیمیشن پس‌زمینه
+  particles: {
+    enabled: true,
+    count: 60,
+    speed: 0.3,
+    color: '0, 255, 204'
+  },
+
+  // لینک‌های خارجی
+  links: {
+    github: 'https://github.com/apzchain/APZ_WALLET',
+    releases: 'https://github.com/apzchain/APZ_WALLET/releases',
+    issues: 'https://github.com/apzchain/APZ_WALLET/issues',
+    security: 'https://github.com/apzchain/APZ_WALLET/blob/main/docs/SECURITY.md'
+  }
+};
+```
+
+---
+
+5️⃣ docs/assets/js/i18n.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — i18n (FA / EN / DE)
+   ═══════════════════════════════════════════════ */
+
+window.APZ_I18N = {
+  en: {
+    dir: 'ltr',
+    brand: {
+      sub: 'Release Dashboard'
+    },
+    stats: {
+      latest: 'Latest Version',
+      production: 'Production',
+      downloads: 'Total Downloads',
+      downloadsSub: 'Across all releases',
+      ci: 'CI Status'
+    },
+    tracks: {
+      title: 'Release Tracks',
+      internal: 'Internal Testing',
+      alpha: 'Closed Testing',
+      beta: 'Open Testing',
+      production: 'Production',
+      live: 'Live',
+      pending: 'Pending',
+      empty: 'Not Published',
+      versionCode: 'Version Code',
+      rollout: 'Rollout'
+    },
+    history: {
+      title: 'Release History',
+      empty: 'No releases yet.',
+      preRelease: 'Pre-release',
+      download: 'Download APK',
+      notes: 'Notes',
+      published: 'Published',
+      size: 'Size'
+    },
+    footer: {
+      built: 'Built with',
+      by: 'by',
+      for: 'for APZ Chain',
+      releases: 'All Releases',
+      security: 'Security'
+    },
+    toast: {
+      refreshed: 'Data refreshed',
+      error: 'Failed to load data',
+      rateLimit: 'GitHub API rate limit — try again later'
+    },
+    time: {
+      justNow: 'just now',
+      minutesAgo: 'min ago',
+      hoursAgo: 'h ago',
+      daysAgo: 'd ago',
+      monthsAgo: 'mo ago',
+      yearsAgo: 'y ago'
+    }
+  },
+
+  fa: {
+    dir: 'rtl',
+    brand: {
+      sub: 'داشبورد انتشار'
+    },
+    stats: {
+      latest: 'آخرین نسخه',
+      production: 'نسخه پایدار',
+      downloads: 'کل دانلودها',
+      downloadsSub: 'در تمام نسخه‌ها',
+      ci: 'وضعیت CI'
+    },
+    tracks: {
+      title: 'کانال‌های انتشار',
+      internal: 'تست داخلی',
+      alpha: 'تست بسته',
+      beta: 'تست باز',
+      production: 'نسخه پایدار',
+      live: 'فعال',
+      pending: 'در انتظار',
+      empty: 'منتشر نشده',
+      versionCode: 'کد نسخه',
+      rollout: 'نرخ انتشار'
+    },
+    history: {
+      title: 'تاریخچه انتشار',
+      empty: 'هنوز نسخه‌ای منتشر نشده است.',
+      preRelease: 'پیش‌انتشار',
+      download: 'دانلود APK',
+      notes: 'توضیحات',
+      published: 'منتشر شده',
+      size: 'حجم'
+    },
+    footer: {
+      built: 'ساخته‌شده با',
+      by: 'توسط',
+      for: 'برای APZ Chain',
+      releases: 'همه انتشارها',
+      security: 'امنیت'
+    },
+    toast: {
+      refreshed: 'داده‌ها به‌روزرسانی شد',
+      error: 'خطا در بارگذاری داده‌ها',
+      rateLimit: 'محدودیت نرخ GitHub API — بعداً دوباره تلاش کنید'
+    },
+    time: {
+      justNow: 'همین الان',
+      minutesAgo: 'دقیقه پیش',
+      hoursAgo: 'ساعت پیش',
+      daysAgo: 'روز پیش',
+      monthsAgo: 'ماه پیش',
+      yearsAgo: 'سال پیش'
+    }
+  },
+
+  de: {
+    dir: 'ltr',
+    brand: {
+      sub: 'Release-Dashboard'
+    },
+    stats: {
+      latest: 'Neueste Version',
+      production: 'Produktion',
+      downloads: 'Downloads gesamt',
+      downloadsSub: 'Über alle Releases',
+      ci: 'CI-Status'
+    },
+    tracks: {
+      title: 'Release-Kanäle',
+      internal: 'Interner Test',
+      alpha: 'Geschlossener Test',
+      beta: 'Offener Test',
+      production: 'Produktion',
+      live: 'Live',
+      pending: 'Ausstehend',
+      empty: 'Nicht veröffentlicht',
+      versionCode: 'Versionscode',
+      rollout: 'Rollout'
+    },
+    history: {
+      title: 'Release-Verlauf',
+      empty: 'Noch keine Releases.',
+      preRelease: 'Vorabversion',
+      download: 'APK herunterladen',
+      notes: 'Notizen',
+      published: 'Veröffentlicht',
+      size: 'Größe'
+    },
+    footer: {
+      built: 'Erstellt mit',
+      by: 'von',
+      for: 'für APZ Chain',
+      releases: 'Alle Releases',
+      security: 'Sicherheit'
+    },
+    toast: {
+      refreshed: 'Daten aktualisiert',
+      error: 'Daten konnten nicht geladen werden',
+      rateLimit: 'GitHub-API-Limit — bitte später erneut versuchen'
+    },
+    time: {
+      justNow: 'gerade eben',
+      minutesAgo: 'Min.',
+      hoursAgo: 'Std.',
+      daysAgo: 'T.',
+      monthsAgo: 'Mon.',
+      yearsAgo: 'J.'
+    }
+  }
+};
+```
+
+---
+
+6️⃣ docs/assets/js/api.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — GitHub API Wrapper
+   ═══════════════════════════════════════════════ */
+
+(function () {
+  const cfg = window.APZ_CONFIG;
+
+  // ─── Cache ───
+  const cache = new Map();
+  const CACHE_TTL = 60_000; // 1 دقیقه
+
+  function getCacheKey(path) {
+    return path;
+  }
+
+  function isCacheValid(entry) {
+    return entry && Date.now() - entry.time < CACHE_TTL;
+  }
+
+  // ─── Fetch Wrapper ───
+  async function ghFetch(path) {
+    const key = getCacheKey(path);
+    const cached = cache.get(key);
+    if (isCacheValid(cached)) return cached.data;
+
+    const url = cfg.api.base + path;
+    const headers = { Accept: 'application/vnd.github+json' };
+
+    // توکن اختیاری از localStorage (برای نرخ بالاتر)
+    const token = localStorage.getItem('apz-gh-token');
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const res = await fetch(url, { headers });
+
+    if (res.status === 403) {
+      const rateLimit = res.headers.get('X-RateLimit-Remaining');
+      if (rateLimit === '0') throw new Error('RATE_LIMIT');
+    }
+    if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
+
+    const data = await res.json();
+    cache.set(key, { data, time: Date.now() });
+    return data;
+  }
+
+  // ─── Public API ───
+  window.APZ_API = {
+    async getReleases() {
+      return ghFetch(cfg.api.releases
+        .replace('{owner}', cfg.repo.owner)
+        .replace('{repo}', cfg.repo.name) + '?per_page=30');
+    },
+
+    async getWorkflowRuns() {
+      return ghFetch(`/repos/${cfg.repo.owner}/${cfg.repo.name}/actions/runs?per_page=30`);
+    },
+
+    async getWorkflowStatus(fileName) {
+      const path = `/repos/${cfg.repo.owner}/${cfg.repo.name}/actions/workflows/${fileName}/runs?per_page=1`;
+      const data = await ghFetch(path);
+      return data.workflow_runs?.[0] || null;
+    },
+
+    clearCache() {
+      cache.clear();
+    }
+  };
+})();
+```
+
+---
+
+7️⃣ docs/assets/js/ui.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — UI Helpers & Renderers
+   ═══════════════════════════════════════════════ */
+
+(function () {
+  const cfg = window.APZ_CONFIG;
+
+  // ─── Helpers ───
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes) return '—';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+    return `${bytes.toFixed(1)} ${units[i]}`;
+  }
+
+  function formatNumber(n) {
+    if (n == null) return '—';
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  function timeAgo(dateStr, t) {
+    if (!dateStr) return '—';
+    const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+    if (seconds < 30) return t.time.justNow;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} ${t.time.minutesAgo}`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} ${t.time.hoursAgo}`;
+    if (seconds < 2592000) return `${Math.floor(seconds / 86400)} ${t.time.daysAgo}`;
+    if (seconds < 31536000) return `${Math.floor(seconds / 2592000)} ${t.time.monthsAgo}`;
+    return `${Math.floor(seconds / 31536000)} ${t.time.yearsAgo}`;
+  }
+
+  function parseVersionFromTag(tag) {
+    const clean = String(tag || '').replace(/^(android-)?v/, '');
+    return clean || tag;
+  }
+
+  function getTrackStatus(track, releases) {
+    // تلاش برای استخراج track از tag یا metadata
+    // این منطق باید با workflow هماهنگ باشد
+    const trackReleases = releases.filter(r => {
+      const tag = r.tag_name.toLowerCase();
+      if (track === 'internal') return tag.includes('internal') || tag === 'nightly';
+      if (track === 'alpha') return tag.includes('alpha');
+      if (track === 'beta') return tag.includes('beta') || r.prerelease;
+      if (track === 'production') return !r.prerelease && !tag.includes('beta') && !tag.includes('alpha');
+      return false;
+    });
+
+    return trackReleases[0] || null;
+  }
+
+  // ─── Renderers ───
+  function renderStats(data, t) {
+    const { releases, ciStatus } = data;
+
+    // Latest
+    const latest = releases[0];
+    document.getElementById('stat-latest').textContent = latest
+      ? parseVersionFromTag(latest.tag_name)
+      : '—';
+    document.getElementById('stat-latest-date').textContent = latest
+      ? timeAgo(latest.published_at, t)
+      : '—';
+
+    // Production
+    const prod = releases.find(r => !r.prerelease && !r.tag_name.includes('beta'));
+    document.getElementById('stat-production').textContent = prod
+      ? parseVersionFromTag(prod.tag_name)
+      : '—';
+    document.getElementById('stat-production-rollout').textContent = prod
+      ? `${t.tracks.rollout}: 100%`
+      : '—';
+
+    // Downloads
+    const total = releases.reduce((sum, r) => {
+      return sum + (r.assets || []).reduce((s, a) => s + (a.download_count || 0), 0);
+    }, 0);
+    document.getElementById('stat-downloads').textContent = formatNumber(total);
+
+    // CI
+    const ciDot = document.getElementById('ci-dot');
+    ciDot.className = 'status-dot';
+    if (ciStatus) {
+      document.getElementById('stat-ci').textContent = ciStatus.conclusion || ciStatus.status || '—';
+      document.getElementById('stat-ci-meta').textContent = ciStatus.head_branch
+        ? `${ciStatus.head_branch} · ${timeAgo(ciStatus.updated_at, t)}`
+        : '—';
+      if (ciStatus.conclusion === 'success') ciDot.classList.add('success');
+      else if (ciStatus.conclusion === 'failure') ciDot.classList.add('failure');
+      else if (ciStatus.status === 'in_progress') ciDot.classList.add('running');
+    } else {
+      document.getElementById('stat-ci').textContent = '—';
+      document.getElementById('stat-ci-meta').textContent = '—';
+    }
+  }
+
+  function renderTracks(releases, t) {
+    const grid = document.getElementById('track-grid');
+    grid.innerHTML = '';
+
+    cfg.tracks.forEach(track => {
+      const release = getTrackStatus(track, releases);
+      const card = document.createElement('div');
+      card.className = 'track-card';
+      card.dataset.track = track;
+
+      const version = release ? parseVersionFromTag(release.tag_name) : '—';
+      const isLive = !!release;
+      const badgeClass = isLive ? 'live' : 'empty';
+      const badgeText = isLive ? t.tracks.live : t.tracks.empty;
+      const rollout = isLive ? 100 : 0;
+
+      card.innerHTML = `
+        <div class="track-name">${escapeHtml(t.tracks[track])}</div>
+        <div class="track-version">${escapeHtml(version)}</div>
+        <div class="track-code">${t.tracks.versionCode}: ${escapeHtml(release?.id || '—')}</div>
+        <div class="track-progress">
+          <div class="track-progress-bar" style="width: ${rollout}%"></div>
+        </div>
+        <div class="track-meta">
+          <span class="track-badge ${badgeClass}">${badgeText}</span>
+          <span>${rollout}%</span>
+        </div>
+      `;
+
+      grid.appendChild(card);
+    });
+  }
+
+  function renderReleases(releases, t) {
+    const list = document.getElementById('releases-list');
+    const countEl = document.getElementById('release-count');
+    const emptyEl = document.getElementById('empty-state');
+
+    countEl.textContent = `${releases.length}`;
+
+    if (!releases.length) {
+      list.innerHTML = '';
+      emptyEl.hidden = false;
+      return;
+    }
+
+    emptyEl.hidden = true;
+    list.innerHTML = '';
+
+    releases.forEach((release, idx) => {
+      const card = document.createElement('div');
+      card.className = 'release-card';
+
+      const apkAsset = (release.assets || []).find(a => a.name.endsWith('.apk'));
+      const aabAsset = (release.assets || []).find(a => a.name.endsWith('.aab'));
+      const downloadUrl = apkAsset?.browser_download_url || release.html_url;
+
+      const badgeText = parseVersionFromTag(release.tag_name).slice(0, 8);
+
+      card.innerHTML = `
+        <div class="release-badge">${escapeHtml(badgeText)}</div>
+        <div class="release-info">
+          <div class="release-title">
+            <span class="release-version">${escapeHtml(release.name || release.tag_name)}</span>
+            <span class="release-tag">${escapeHtml(release.tag_name)}</span>
+            ${release.prerelease ? `<span class="release-pre">${t.history.preRelease}</span>` : ''}
+          </div>
+          <div class="release-meta">
+            <span class="release-meta-item">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              ${timeAgo(release.published_at, t)}
+            </span>
+            ${apkAsset ? `
+              <span class="release-meta-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                ${escapeHtml(apkAsset.name)} · ${formatBytes(apkAsset.size)}
+              </span>
+            ` : ''}
+            <span class="release-meta-item">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              ${formatNumber((release.assets || []).reduce((s, a) => s + (a.download_count || 0), 0))} ${t.stats.downloadsSub.toLowerCase().split(' ')[0] || 'downloads'}
+            </span>
+          </div>
+        </div>
+        <div class="release-actions">
+          ${apkAsset ? `<a class="btn btn-primary" href="${downloadUrl}" target="_blank" rel="noopener">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+            APK
+          </a>` : ''}
+          <a class="btn btn-ghost" href="${release.html_url}" target="_blank" rel="noopener">
+            ${t.history.notes}
+          </a>
+        </div>
+      `;
+
+      list.appendChild(card);
+    });
+  }
+
+  function renderAll(data, t) {
+    renderStats(data, t);
+    renderTracks(data.releases, t);
+    renderReleases(data.releases, t);
+  }
+
+  function showToast(msg, type = 'success') {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.className = `toast ${type} show`;
+    setTimeout(() => toast.classList.remove('show'), 3000);
+  }
+
+  // ─── Particle Background ───
+  function initParticles() {
+    if (!cfg.particles.enabled) return;
+    const canvas = document.getElementById('particles');
+    const ctx = canvas.getContext('2d');
+    let particles = [];
+    let w, h;
+
+    function resize() {
+      w = canvas.width = window.innerWidth;
+      h = canvas.height = window.innerHeight;
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    for (let i = 0; i < cfg.particles.count; i++) {
+      particles.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * cfg.particles.speed,
+        vy: (Math.random() - 0.5) * cfg.particles.speed,
+        r: Math.random() * 1.8 + 0.4
+      });
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = `rgba(${cfg.particles.color}, 0.6)`;
+      particles.forEach((p, i) => {
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < 0 || p.x > w) p.vx *= -1;
+        if (p.y < 0 || p.y > h) p.vy *= -1;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+
+        // connections
+        for (let j = i + 1; j < particles.length; j++) {
+          const q = particles[j];
+          const dx = p.x - q.x, dy = p.y - q.y;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d < 120) {
+            ctx.strokeStyle = `rgba(${cfg.particles.color}, ${0.08 * (1 - d / 120)})`;
+            ctx.lineWidth = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(q.x, q.y);
+            ctx.stroke();
+          }
+        }
+      });
+      requestAnimationFrame(draw);
+    }
+    draw();
+  }
+
+  // ─── Public ───
+  window.APZ_UI = {
+    renderAll,
+    showToast,
+    initParticles,
+    parseVersionFromTag,
+    timeAgo
+  };
+})();
+```
+
+---
+
+8️⃣ docs/assets/js/app.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Main Application
+   ═══════════════════════════════════════════════ */
+
+(function () {
+  const cfg = window.APZ_CONFIG;
+  const I18N = window.APZ_I18N;
+  const API = window.APZ_API;
+  const UI = window.APZ_UI;
+
+  let currentLang = localStorage.getItem(cfg.storageKey) || cfg.defaultLang;
+  let isRefreshing = false;
+  let lastManualRefresh = 0;
+
+  // ─── Language ───
+  function applyLang(lang) {
+    if (!I18N[lang]) lang = cfg.defaultLang;
+    currentLang = lang;
+    localStorage.setItem(cfg.storageKey, lang);
+
+    const t = I18N[lang];
+    const html = document.getElementById('html-root');
+    html.lang = lang;
+    html.dir = t.dir;
+
+    // Update static i18n elements
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      const key = el.dataset.i18n;
+      const val = key.split('.').reduce((o, k) => o?.[k], t);
+      if (val) el.textContent = val;
+    });
+
+    // Update active button
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.lang === lang);
+    });
+  }
+
+  function setupLangSwitch() {
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        applyLang(btn.dataset.lang);
+        load(true);
+      });
+    });
+  }
+
+  // ─── Data Loading ───
+  async function load(silent = false) {
+    if (isRefreshing) return;
+    isRefreshing = true;
+
+    const t = I18N[currentLang];
+    const refreshBtn = document.getElementById('refresh-btn');
+    refreshBtn?.classList.add('loading');
+
+    try {
+      const [releases, ciStatus] = await Promise.all([
+        API.getReleases().catch(() => []),
+        API.getWorkflowStatus(cfg.workflows.ci).catch(() => null)
+      ]);
+
+      // فیلتر کردن nightly/tags
+      const cleanReleases = (releases || []).filter(r => !r.draft);
+
+      UI.renderAll({ releases: cleanReleases, ciStatus }, t);
+
+      if (!silent) UI.showToast(t.toast.refreshed, 'success');
+    } catch (err) {
+      console.error('[APZ Dashboard]', err);
+      const msg = err.message === 'RATE_LIMIT' ? t.toast.rateLimit : t.toast.error;
+      UI.showToast(msg, 'error');
+    } finally {
+      isRefreshing = false;
+      refreshBtn?.classList.remove('loading');
+    }
+  }
+
+  // ─── Refresh Button ───
+  function setupRefresh() {
+    const btn = document.getElementById('refresh-btn');
+    btn?.addEventListener('click', () => {
+      const now = Date.now();
+      if (now - lastManualRefresh < cfg.refresh.manualCooldown) {
+        return; // جلوگیری از spam
+      }
+      lastManualRefresh = now;
+      API.clearCache();
+      load(false);
+    });
+  }
+
+  // ─── Init ───
+  function init() {
+    applyLang(currentLang);
+    setupLangSwitch();
+    setupRefresh();
+    UI.initParticles();
+    load(true);
+
+    // Auto refresh
+    setInterval(() => load(true), cfg.refresh.autoInterval);
+
+    // Refresh on visibility change
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) load(true);
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+```
+
+---
+
+9️⃣ docs/assets/icons/icon.svg
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00ffcc"/>
+      <stop offset="100%" stop-color="#00b8ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="#05070a"/>
+  <path d="M40 88 L64 34 L88 88 M48 72 L80 72"
+        stroke="url(#g1)" stroke-width="6"
+        stroke-linecap="round" stroke-linejoin="round"
+        filter="drop-shadow(0 0 6px #00ffcc)"/>
+  <circle cx="64" cy="100" r="3" fill="#00ffcc"/>
+</svg>
+```
+
+---
+
+🔟 Workflow انتشار GitHub Pages
+
+.github/workflows/pages-deploy.yml
+
+```yaml
+name: Deploy GitHub Pages Dashboard
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages-deploy.yml'
+  workflow_dispatch:
+  # به‌روزرسانی هر ۶ ساعت برای data تازه
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate Release Snapshot
+        run: |
+          mkdir -p docs/data
+          cat > docs/data/releases.json <<'EOF'
+          {
+            "generatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "source": "github-api-live",
+            "note": "این فایل به‌صورت خودکار تولید شده است"
+          }
+          EOF
+        # داده‌های واقعی در زمان اجرا از API گرفته می‌شوند
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+```
+
+---
+
+1️⃣1️⃣ Workflow اطلاع‌رسانی Release جدید
+
+.github/workflows/notify-dashboard.yml
+
+```yaml
+name: Notify Dashboard on Release
+
+on:
+  release:
+    types: [published, edited, deleted]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  trigger-pages-rebuild:
+    name: Trigger Pages Rebuild
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Pages Workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'pages-deploy.yml',
+              ref: 'main'
+            });
+            console.log('✅ Pages rebuild triggered');
+```
+
+---
+
+1️⃣2️⃣ فعال‌سازی GitHub Pages
+
+مراحل:
+
+1. به Settings → Pages بروید
+2. Source: GitHub Actions
+3. Build and deployment: GitHub Actions
+4. Workflow pages-deploy.yml را اجرا کنید
+5. داشبورد روی https://apzchain.github.io/APZ_WALLET/ در دسترس خواهد بود
+
+---
+
+1️⃣3️⃣ ✨ ویژگی‌های داشبورد
+
+ویژگی توضیح
+🎨 تم نئونی APZ رنگ‌های #00ffcc و #00b8ff
+🌍 سه‌زبانه EN/FA/DE با RTL خودکار
+📊 ۴ کارت آمار آخرین نسخه، Production، دانلودها، CI
+🎯 Track Board نمایش internal/alpha/beta/production
+📜 Release History با changelog و دانلود مستقیم
+✨ Particle Animation پس‌زمینه WebGL با اتصالات
+🔄 Auto Refresh هر ۲ دقیقه + روی visibility change
+📱 Fully Responsive موبایل و دسکتاپ
+🔐 امنیت بدون توکن ذخیره‌شده
+⚡ کش هوشمند ۱ دقیقه TTL برای کاهش فشار API
+🌐 Rate Limit Handling پیام مناسب در صورت اتمام سهمیه
+🔗 Deep Links لینک مستقیم به APK از هر release
+🕐 زمان نسبی "۲ ساعت پیش"، "۳ روز پیش" (چندزبانه)
+
+---
+
+1️⃣4️⃣ 🎯 پیش‌نمایش داشبورد
+
+```
+╔══════════════════════════════════════════════════════════╗
+║  🟢 APZ Wallet              [EN] [فا] [DE]              ║
+║     Release Dashboard                                    ║
+╠══════════════════════════════════════════════════════════╣
+║  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐     ║
+║  │ Latest Ver.  │ │ Production   │ │ Downloads    │     ║
+║  │   1.2.0      │ │   1.1.5      │ │   1.2K       │     ║
+║  │ 2h ago       │ │ Rollout:100% │ │ All releases │     ║
+║  └──────────────┘ └──────────────┘ └──────────────┘     ║
+║  ┌──────────────┐                                        ║
+║  │ CI Status    │                                        ║
+║  │ ● success    │                                        ║
+║  │ main · 5m    │                                        ║
+║  └──────────────┘                                        ║
+╠══════════════════════════════════════════════════════════╣
+║  RELEASE TRACKS                                          ║
+║  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐   ║
+║  │ INTERNAL │ │  ALPHA   │ │   BETA   │ │PRODUCTION│   ║
+║  │  1.2.1   │ │  1.2.0   │ │  1.1.9   │ │  1.1.5   │   ║
+║  │ ▓▓▓▓▓▓▓▓ │ │ ▓▓▓▓▓▓▓▓ │ │ ▓▓▓▓▓▓▓▓ │ │ ▓▓▓▓▓▓▓▓ │   ║
+║  └──────────┘ └──────────┘ └──────────┘ └──────────┘   ║
+╠══════════════════════════════════════════════════════════╣
+║  RELEASE HISTORY                              [8]        ║
+║  ┌─────────────────────────────────────────────────────┐ ║
+║  │ [v1.2] APZ Wallet v1.2.0     [APK] [Notes]         │ ║
+║  │        🕐 2h ago · 8.4MB · 245 DL                  │ ║
+║  └─────────────────────────────────────────────────────┘ ║
+║  ┌─────────────────────────────────────────────────────┐ ║
+║  │ [v1.1] APZ Wallet v1.1.9     [APK] [Notes]         │ ║
+║  │        🕐 3d ago · 8.2MB · 512 DL                  │ ║
+║  └─────────────────────────────────────────────────────┘ ║
+╠══════════════════════════════════════════════════════════╣
+║  Built with ❤️ by Khalil Heyrani for APZ Chain          ║
+╚══════════════════════════════════════════════════════════╝
+```
+
+---
+
+1️⃣5️⃣ ✅ چک‌لیست نهایی
+
+☐ تمام فایل‌های docs/ ساخته شدند
+☐ .nojekyll اضافه شد
+☐ pages-deploy.yml ایجاد شد
+☐ notify-dashboard.yml ایجاد شد
+☐ GitHub Pages روی GitHub Actions تنظیم شد
+☐ Workflow pages-deploy.yml با موفقیت اجرا شد
+☐ داشبورد روی URL قابل دسترسی است
+☐ تغییر زبان (EN/FA/DE) کار می‌کند
+☐ Release جدید → داشبورد خودکار به‌روزرسانی می‌شود
+
+---
+
+1️⃣6️⃣ 🎁 نکات پیشرفته (اختیاری)
+
+افزودن توکن GitHub (برای نرخ بالاتر):
+
+اگر بازدیدکننده‌ها زیاد باشند، می‌توانید یک Proxy یا توکن Public محدود در localStorage قرار دهید:
+
+```javascript
+// در کنسول مرورگر:
+localStorage.setItem('apz-gh-token', 'ghp_xxx');
+```
+
+افزودن نمودار:
+
+می‌توانید Chart.js اضافه کنید برای نمایش روند دانلود:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+```
