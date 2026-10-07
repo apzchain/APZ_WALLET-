@@ -1,0 +1,1690 @@
+---
+
+📁 ساختار فایل‌های جدید
+
+```
+docs/
+├── assets/
+│   ├── css/
+│   │   └── contract.css             # ✨ جدید
+│   └── js/
+│       ├── abi-fetcher.js           # ✨ جدید (دریافت ABI از منابع)
+│       ├── contract-ui.js           # ✨ جدید (رندر ABI و توابع)
+│       └── contract-interact.js     # ✨ جدید (فراخوانی توابع)
+```
+
+---
+
+1️⃣ docs/assets/js/abi-fetcher.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — ABI Fetcher
+   Sources (به ترتیب اولویت):
+     1. Sourcify (بدون API key)
+     2. Etherscan-compatible API (اختیاری)
+     3. 4byte.directory (فقط function selectors)
+     4. heimdall-api (decompile bytecode)
+   ═══════════════════════════════════════════════ */
+
+(function () {
+  'use strict';
+
+  const RPC = window.APZ_RPC;
+
+  // ─── Configuration ───
+  const CONFIG = {
+    // Sourcify — بدون API key
+    sourcify: {
+      enabled: true,
+      baseUrl: 'https://repo.sourcify.dev/contracts',
+      // ساختار: {baseUrl}/{match_type}/{chainId}/{address}/metadata.json
+      matchTypes: ['full_match', 'partial_match']
+    },
+
+    // Etherscan-compatible API (اختیاری)
+    etherscan: {
+      enabled: false,
+      apiKey: null, // از localStorage خوانده می‌شود
+      baseUrl: 'https://api.etherscan.io/v2/api'
+    },
+
+    // 4byte.directory — بدون API key
+    fourByte: {
+      enabled: true,
+      baseUrl: 'https://www.4byte.directory/api/v1'
+    },
+
+    // heimdall-api (decompile) — نیاز به سرور جداگانه
+    heimdall: {
+      enabled: false,
+      baseUrl: 'https://heimdall-api.example.com' // خودتان مستقر کنید
+    },
+
+    // Cache TTL
+    cacheTTL: 24 * 60 * 60 * 1000 // 24 ساعت
+  };
+
+  // ─── Cache ───
+  const abiCache = new Map();
+
+  function getCacheKey(chainId, address) {
+    return `${chainId}:${address.toLowerCase()}`;
+  }
+
+  function getCached(chainId, address) {
+    const key = getCacheKey(chainId, address);
+    const entry = abiCache.get(key);
+    if (entry && Date.now() - entry.time < CONFIG.cacheTTL) {
+      return entry.data;
+    }
+    return null;
+  }
+
+  function setCache(chainId, address, data) {
+    const key = getCacheKey(chainId, address);
+    abiCache.set(key, { data, time: Date.now() });
+  }
+
+  // ─── Source: Sourcify ───
+  async function fetchFromSourcify(chainId, address) {
+    if (!CONFIG.sourcify.enabled) return null;
+
+    for (const matchType of CONFIG.sourcify.matchTypes) {
+      try {
+        const url = `${CONFIG.sourcify.baseUrl}/${matchType}/${chainId}/${address}/metadata.json`;
+        const res = await fetch(url);
+        if (!res.ok) continue;
+
+        const metadata = await res.json();
+        if (metadata?.output?.abi) {
+          console.log(`[ABI] Sourcify (${matchType}): found ABI`);
+          return {
+            abi: metadata.output.abi,
+            source: `Sourcify (${matchType})`,
+            verified: true,
+            compiler: metadata.compiler?.version || null,
+            contractName: metadata.settings?.compilationTarget?.[address] || null
+          };
+        }
+      } catch (err) {
+        console.warn(`[ABI] Sourcify ${matchType} failed:`, err.message);
+      }
+    }
+    return null;
+  }
+
+  // ─── Source: Etherscan-compatible ───
+  async function fetchFromEtherscan(chainId, address) {
+    if (!CONFIG.etherscan.enabled) return null;
+
+    const apiKey = CONFIG.etherscan.apiKey ||
+      localStorage.getItem('apz-etherscan-key');
+    if (!apiKey) return null;
+
+    try {
+      const url = `${CONFIG.etherscan.baseUrl}?module=contract&action=getabi&address=${address}&apikey=${apiKey}`;
+      const res = await fetch(url);
+      if (!res.ok) return null;
+
+      const json = await res.json();
+      if (json.status === '1' && json.result) {
+        const abi = typeof json.result === 'string'
+          ? JSON.parse(json.result)
+          : json.result;
+
+        console.log('[ABI] Etherscan: found ABI');
+        return {
+          abi,
+          source: 'Etherscan',
+          verified: true
+        };
+      }
+    } catch (err) {
+      console.warn('[ABI] Etherscan failed:', err.message);
+    }
+    return null;
+  }
+
+  // ─── Source: heimdall (decompile) ───
+  async function fetchFromHeimdall(chainId, address, rpcUrl) {
+    if (!CONFIG.heimdall.enabled) return null;
+
+    try {
+      const url = `${CONFIG.heimdall.baseUrl}/decompile?address=${address}&rpc=${encodeURIComponent(rpcUrl)}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) return null;
+
+      const json = await res.json();
+      if (json.abi) {
+        console.log('[ABI] heimdall: decompiled ABI');
+        return {
+          abi: json.abi,
+          source: 'heimdall (decompiled)',
+          verified: false,
+          note: 'ABI بازسازی شده از bytecode — ممکن است ناقص باشد'
+        };
+      }
+    } catch (err) {
+      console.warn('[ABI] heimdall failed:', err.message);
+    }
+    return null;
+  }
+
+  // ─── Source: 4byte — فقط selectors ───
+  async function fetchSelectorsFrom4Byte(abi) {
+    // اگر ABI موجود است، نیازی نیست
+    if (abi && abi.length > 0) return null;
+
+    // استخراج selectors از bytecode (به سادگی)
+    // در عمل باید bytecode را تحلیل کرد
+    return null; // placeholder
+  }
+
+  // ─── Main Fetch ───
+  async function fetchABI(chainId, address) {
+    // 1. Cache
+    const cached = getCached(chainId, address);
+    if (cached) {
+      console.log('[ABI] From cache');
+      return cached;
+    }
+
+    // 2. Sourcify
+    let result = await fetchFromSourcify(chainId, address);
+    if (result) {
+      setCache(chainId, address, result);
+      return result;
+    }
+
+    // 3. Etherscan
+    result = await fetchFromEtherscan(chainId, address);
+    if (result) {
+      setCache(chainId, address, result);
+      return result;
+    }
+
+    // 4. heimdall (decompile)
+    const rpcUrl = RPC.getCurrentEndpoint();
+    result = await fetchFromHeimdall(chainId, address, rpcUrl);
+    if (result) {
+      setCache(chainId, address, result);
+      return result;
+    }
+
+    // 5. عدم موفقیت
+    return {
+      abi: null,
+      source: null,
+      verified: false,
+      error: 'ABI_NOT_FOUND'
+    };
+  }
+
+  // ─── Public API ───
+  window.APZ_ABI = {
+    fetchABI,
+    clearCache: () => abiCache.clear(),
+    configure: (opts) => {
+      if (opts.etherscanApiKey) {
+        localStorage.setItem('apz-etherscan-key', opts.etherscanApiKey);
+        CONFIG.etherscan.enabled = true;
+      }
+      if (opts.heimdallUrl) {
+        CONFIG.heimdall.baseUrl = opts.heimdallUrl;
+        CONFIG.heimdall.enabled = true;
+      }
+    }
+  };
+})();
+```
+
+---
+
+2️⃣ docs/assets/js/contract-ui.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Contract UI Renderer
+   Renders ABI, functions, events, and read/write panels
+   ═══════════════════════════════════════════════ */
+
+(function () {
+  'use strict';
+
+  const RPC = window.APZ_RPC;
+
+  let currentLang = localStorage.getItem('apz-dashboard-lang') || 'en';
+
+  // ─── i18n ───
+  const CONTRACT_I18N = {
+    en: {
+      contractTitle: 'Smart Contract',
+      verified: 'Verified',
+      unverified: 'Unverified',
+      decompiled: 'Decompiled',
+      compiler: 'Compiler',
+      source: 'Source',
+      functions: 'Functions',
+      events: 'Events',
+      readFunctions: 'Read Functions',
+      writeFunctions: 'Write Functions',
+      noABI: 'ABI not available',
+      noABINote: 'This contract is not verified on Sourcify or Etherscan. You can view the bytecode below.',
+      inputs: 'Inputs',
+      output: 'Output',
+      call: 'Call',
+      query: 'Query',
+      calling: 'Calling...',
+      result: 'Result',
+      error: 'Error',
+      bytecode: 'Bytecode',
+      copyBytecode: 'Copy Bytecode',
+      viewOnSourcify: 'View on Sourcify',
+      viewOnEtherscan: 'View on Explorer',
+      stateMutability: {
+        view: 'view',
+        pure: 'pure',
+        nonpayable: 'nonpayable',
+        payable: 'payable'
+      },
+      paramName: 'Parameter',
+      paramType: 'Type',
+      enterValue: 'Enter value',
+      noParams: 'No parameters',
+      noEvents: 'No events',
+      functionCount: 'functions',
+      eventCount: 'events'
+    },
+    fa: {
+      contractTitle: 'قرارداد هوشمند',
+      verified: 'تأییدشده',
+      unverified: 'تأییدنشده',
+      decompiled: 'از bytecode بازسازی شده',
+      compiler: 'کامپایلر',
+      source: 'منبع',
+      functions: 'توابع',
+      events: 'رویدادها',
+      readFunctions: 'توابع خواندنی',
+      writeFunctions: 'توابع نوشتنی',
+      noABI: 'ABI در دسترس نیست',
+      noABINote: 'این قرارداد در Sourcify یا Etherscan تأیید نشده است. می‌توانید bytecode را در زیر مشاهده کنید.',
+      inputs: 'ورودی‌ها',
+      output: 'خروجی',
+      call: 'فراخوانی',
+      query: 'کوئری',
+      calling: 'در حال فراخوانی...',
+      result: 'نتیجه',
+      error: 'خطا',
+      bytecode: 'Bytecode',
+      copyBytecode: 'کپی bytecode',
+      viewOnSourcify: 'مشاهده در Sourcify',
+      viewOnEtherscan: 'مشاهده در کاوشگر',
+      stateMutability: {
+        view: 'خواندنی',
+        pure: 'خالص',
+        nonpayable: 'غیرقابل پرداخت',
+        payable: 'قابل پرداخت'
+      },
+      paramName: 'پارامتر',
+      paramType: 'نوع',
+      enterValue: 'مقدار را وارد کنید',
+      noParams: 'بدون پارامتر',
+      noEvents: 'بدون رویداد',
+      functionCount: 'تابع',
+      eventCount: 'رویداد'
+    },
+    de: {
+      contractTitle: 'Smart Contract',
+      verified: 'Verifiziert',
+      unverified: 'Nicht verifiziert',
+      decompiled: 'Dekompiliert',
+      compiler: 'Compiler',
+      source: 'Quelle',
+      functions: 'Funktionen',
+      events: 'Ereignisse',
+      readFunctions: 'Lesefunktionen',
+      writeFunctions: 'Schreibfunktionen',
+      noABI: 'ABI nicht verfügbar',
+      noABINote: 'Dieser Vertrag ist nicht auf Sourcify oder Etherscan verifiziert. Sie können den Bytecode unten anzeigen.',
+      inputs: 'Eingaben',
+      output: 'Ausgabe',
+      call: 'Aufrufen',
+      query: 'Abfragen',
+      calling: 'Wird aufgerufen...',
+      result: 'Ergebnis',
+      error: 'Fehler',
+      bytecode: 'Bytecode',
+      copyBytecode: 'Bytecode kopieren',
+      viewOnSourcify: 'Auf Sourcify anzeigen',
+      viewOnEtherscan: 'Im Explorer anzeigen',
+      stateMutability: {
+        view: 'Lesen',
+        pure: 'Rein',
+        nonpayable: 'Nicht zahlbar',
+        payable: 'Zahlbar'
+      },
+      paramName: 'Parameter',
+      paramType: 'Typ',
+      enterValue: 'Wert eingeben',
+      noParams: 'Keine Parameter',
+      noEvents: 'Keine Ereignisse',
+      functionCount: 'Funktionen',
+      eventCount: 'Ereignisse'
+    }
+  };
+
+  function t(key) {
+    const dict = CONTRACT_I18N[currentLang] || CONTRACT_I18N.en;
+    if (key.includes('.')) {
+      return key.split('.').reduce((o, k) => o?.[k], dict) || key;
+    }
+    return dict[key] || key;
+  }
+
+  // ─── Helpers ───
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function shortHash(h, n = 8) {
+    if (!h) return '—';
+    if (h.length <= n * 2 + 2) return h;
+    return `${h.slice(0, n + 2)}...${h.slice(-n)}`;
+  }
+
+  function copyToClipboard(text, toastFn) {
+    navigator.clipboard.writeText(text).then(() => {
+      if (toastFn) toastFn('Copied to clipboard');
+    });
+  }
+
+  function formatType(input) {
+    let type = input.type;
+    if (type === 'tuple' && input.components) {
+      type = `(${input.components.map(formatType).join(',')})`;
+    }
+    if (type.endsWith('[]')) {
+      type = type.replace('[]', '[]');
+    }
+    return type;
+  }
+
+  function formatSignature(fn) {
+    const inputs = (fn.inputs || []).map((i) => formatType(i)).join(',');
+    return `${fn.name}(${inputs})`;
+  }
+
+  function getStateMutabilityBadge(fn) {
+    const mut = fn.stateMutability || (fn.constant ? 'view' : 'nonpayable');
+    const label = t(`stateMutability.${mut}`);
+    const cls = (mut === 'view' || mut === 'pure') ? 'view' : 'write';
+    return `<span class="mutability-badge ${cls}">${label}</span>`;
+  }
+
+  // ─── Contract Header ───
+  function renderContractHeader(address, abiInfo, bytecode) {
+    const isVerified = abiInfo?.verified;
+    const isDecompiled = abiInfo?.source?.includes('heimdall');
+    const hasABI = abiInfo?.abi && abiInfo.abi.length > 0;
+
+    let statusBadge = '';
+    if (hasABI && isVerified) {
+      statusBadge = `<span class="badge success">✓ ${t('verified')}</span>`;
+    } else if (isDecompiled) {
+      statusBadge = `<span class="badge pending">⚙ ${t('decompiled')}</span>`;
+    } else if (!hasABI) {
+      statusBadge = `<span class="badge failed">${t('unverified')}</span>`;
+    }
+
+    return `
+      <div class="result-card contract-header">
+        <div class="result-card-header">
+          <div class="result-card-icon contract">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+              <polyline points="10 9 9 9 8 9"/>
+            </svg>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div class="result-card-title">${t('contractTitle')} ${statusBadge}</div>
+            <div class="result-card-subtitle">${shortHash(address, 10)}</div>
+          </div>
+        </div>
+
+        <div class="field-grid">
+          <div class="field-item" style="grid-column:1/-1">
+            <div class="field-label">Address</div>
+            <div class="address-display">
+              <span>${escapeHtml(address)}</span>
+              <button class="copy-btn" data-copy="${escapeHtml(address)}">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          ${abiInfo?.source ? `
+            <div class="field-item">
+              <div class="field-label">${t('source')}</div>
+              <div class="field-value dim">${escapeHtml(abiInfo.source)}</div>
+            </div>
+          ` : ''}
+
+          ${abiInfo?.compiler ? `
+            <div class="field-item">
+              <div class="field-label">${t('compiler')}</div>
+              <div class="field-value dim">${escapeHtml(abiInfo.compiler)}</div>
+            </div>
+          ` : ''}
+
+          ${abiInfo?.contractName ? `
+            <div class="field-item">
+              <div class="field-label">Name</div>
+              <div class="field-value">${escapeHtml(abiInfo.contractName)}</div>
+            </div>
+          ` : ''}
+
+          ${bytecode && bytecode !== '0x' ? `
+            <div class="field-item" style="grid-column:1/-1">
+              <div class="field-label">${t('bytecode')}</div>
+              <div class="bytecode-preview" id="bytecode-preview">
+                <code>${escapeHtml(bytecode.slice(0, 130))}...</code>
+                <span class="bytecode-size">${(bytecode.length / 2 - 1).toLocaleString()} bytes</span>
+              </div>
+              <div class="share-actions-inline" style="margin-top:10px">
+                <button class="btn btn-ghost small" id="copy-bytecode-btn">
+                  📋 ${t('copyBytecode')}
+                </button>
+                <button class="btn btn-ghost small" id="toggle-bytecode-btn">
+                  👁 View Full
+                </button>
+              </div>
+              <pre class="bytecode-full" id="bytecode-full" hidden>${escapeHtml(bytecode)}</pre>
+            </div>
+          ` : ''}
+
+          ${!hasABI ? `
+            <div class="field-item" style="grid-column:1/-1">
+              <div class="abi-missing-notice">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <div>
+                  <strong>${t('noABI')}</strong>
+                  <p>${t('noABINote')}</p>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  // ─── Function Card ───
+  function renderFunctionCard(fn, index, address) {
+    const isRead = fn.stateMutability === 'view' || fn.stateMutability === 'pure' || fn.constant;
+    const sig = formatSignature(fn);
+    const inputs = fn.inputs || [];
+    const outputs = fn.outputs || [];
+
+    const inputHtml = inputs.length === 0
+      ? `<div class="fn-no-params">${t('noParams')}</div>`
+      : inputs.map((inp, i) => `
+        <div class="fn-input-row">
+          <div class="fn-input-meta">
+            <span class="fn-input-name">${escapeHtml(inp.name || `param${i}`)}</span>
+            <span class="fn-input-type">${escapeHtml(formatType(inp))}</span>
+          </div>
+          <input
+            type="text"
+            class="fn-input-field"
+            data-fn-index="${index}"
+            data-input-index="${i}"
+            data-param-type="${escapeHtml(formatType(inp))}"
+            placeholder="${t('enterValue')} (${escapeHtml(formatType(inp))})"
+          />
+        </div>
+      `).join('');
+
+    const outputHtml = outputs.length
+      ? outputs.map((o, i) => `
+        <span class="fn-output-type">${escapeHtml(formatType(o))}${o.name ? ` ${escapeHtml(o.name)}` : ''}</span>
+      `).join(', ')
+      : '—';
+
+    return `
+      <details class="fn-card" data-fn-index="${index}">
+        <summary class="fn-summary">
+          <div class="fn-summary-left">
+            <span class="fn-name">${escapeHtml(fn.name)}</span>
+            <span class="fn-sig">${escapeHtml(sig)}</span>
+          </div>
+          <div class="fn-summary-right">
+            ${getStateMutabilityBadge(fn)}
+            <svg class="fn-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </summary>
+        <div class="fn-body">
+          <div class="fn-section">
+            <div class="fn-section-label">${t('inputs')}</div>
+            <div class="fn-inputs">${inputHtml}</div>
+          </div>
+
+          <div class="fn-section">
+            <div class="fn-section-label">${t('output')}</div>
+            <div class="fn-outputs">${outputHtml}</div>
+          </div>
+
+          ${isRead ? `
+            <div class="fn-actions">
+              <button class="fn-call-btn" data-call-index="${index}" data-address="${escapeHtml(address)}">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="9 11 12 14 22 4"/>
+                  <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                </svg>
+                ${t('query')}
+              </button>
+            </div>
+            <div class="fn-result" id="fn-result-${index}" hidden>
+              <div class="fn-result-label">${t('result')}</div>
+              <pre class="fn-result-value"></pre>
+            </div>
+          ` : `
+            <div class="fn-write-notice">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>
+              <span>تابع نوشتنی — نیاز به امضای تراکنش دارد</span>
+            </div>
+          `}
+        </div>
+      </details>
+    `;
+  }
+
+  // ─── Events ───
+  function renderEvents(events) {
+    if (!events || events.length === 0) {
+      return `<div class="fn-no-params">${t('noEvents')}</div>`;
+    }
+
+    return events.map((ev) => {
+      const sig = `${ev.name}(${(ev.inputs || []).map(formatType).join(',')})`;
+      return `
+        <div class="event-card">
+          <div class="event-name">${escapeHtml(ev.name)}</div>
+          <div class="event-sig">${escapeHtml(sig)}</div>
+          ${ev.anonymous ? '<span class="event-anon">anonymous</span>' : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  // ─── Main Render ───
+  function renderContract(address, abiInfo, bytecode, toastFn) {
+    const abi = abiInfo?.abi || [];
+    const functions = abi.filter((x) => x.type === 'function');
+    const events = abi.filter((x) => x.type === 'event');
+    const readFns = functions.filter((f) => f.stateMutability === 'view' || f.stateMutability === 'pure' || f.constant);
+    const writeFns = functions.filter((f) => !(f.stateMutability === 'view' || f.stateMutability === 'pure' || f.constant));
+
+    let html = renderContractHeader(address, abiInfo, bytecode);
+
+    if (abi.length > 0) {
+      html += `
+        <div class="contract-stats">
+          <div class="contract-stat">
+            <span class="contract-stat-num">${functions.length}</span>
+            <span class="contract-stat-label">${t('functionCount')}</span>
+          </div>
+          <div class="contract-stat">
+            <span class="contract-stat-num">${events.length}</span>
+            <span class="contract-stat-label">${t('eventCount')}</span>
+          </div>
+        </div>
+      `;
+
+      // Read functions
+      if (readFns.length > 0) {
+        html += `
+          <div class="result-card">
+            <div class="card-section-title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              ${t('readFunctions')} (${readFns.length})
+            </div>
+            <div class="fn-list">
+              ${readFns.map((fn) => renderFunctionCard(fn, functions.indexOf(fn), address)).join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      // Write functions
+      if (writeFns.length > 0) {
+        html += `
+          <div class="result-card">
+            <div class="card-section-title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>
+              ${t('writeFunctions')} (${writeFns.length})
+            </div>
+            <div class="fn-list">
+              ${writeFns.map((fn) => renderFunctionCard(fn, functions.indexOf(fn), address)).join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      // Events
+      if (events.length > 0) {
+        html += `
+          <div class="result-card">
+            <div class="card-section-title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                <path d="M13.73 21a2 2 0 01-3.46 0"/>
+              </svg>
+              ${t('events')} (${events.length})
+            </div>
+            <div class="events-list">
+              ${renderEvents(events)}
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    return html;
+  }
+
+  // ─── Public ───
+  window.APZ_CONTRACT_UI = {
+    renderContract,
+    setLang: (lang) => { currentLang = lang; },
+    getLang: () => currentLang
+  };
+})();
+```
+
+---
+
+3️⃣ docs/assets/js/contract-interact.js
+
+```javascript
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Contract Interaction
+   eth_call برای توابع read-only + ABI encoding/decoding
+   ═══════════════════════════════════════════════ */
+
+(function () {
+  'use strict';
+
+  const RPC = window.APZ_RPC;
+
+  // ─── Keccak-256 (کوچک، برای function selector) ───
+  // برای سادگی از یک تابع ساده استفاده می‌کنیم
+  // در production از ethers.js یا keccak استفاده کنید
+  async function computeSelector(fn) {
+    const sig = `${fn.name}(${(fn.inputs || []).map((i) => i.type).join(',')})`;
+    // اگر ethers موجود باشد از آن استفاده کن
+    if (window.ethers?.utils?.id) {
+      return window.ethers.utils.id(sig).slice(0, 10);
+    }
+    // fallback: hash ساده (برای نمایش)
+    return '0x' + simpleHash(sig).slice(0, 8);
+  }
+
+  function simpleHash(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) {
+      h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+    }
+    return Math.abs(h).toString(16).padStart(8, '0');
+  }
+
+  // ─── ABI Encode ───
+  // پیاده‌سازی ساده برای انواع پایه
+  function padHex(hex, bytes = 32) {
+    const clean = hex.replace(/^0x/, '');
+    return clean.padStart(bytes * 2, '0');
+  }
+
+  function encodeParam(type, value) {
+    const t = type.replace('[]', '');
+
+    // Address
+    if (/^address$/i.test(t)) {
+      if (!/^0x[a-fA-F0-9]{40}$/.test(value)) {
+        throw new Error(`Invalid address: ${value}`);
+      }
+      return padHex(value.toLowerCase());
+    }
+
+    // Boolean
+    if (/^bool$/i.test(t)) {
+      const v = value === true || value === 'true' || value === '1';
+      return padHex(v ? '1' : '0');
+    }
+
+    // Uint
+    if (/^uint\d*$/i.test(t)) {
+      let num;
+      try {
+        num = BigInt(value);
+      } catch {
+        throw new Error(`Invalid uint: ${value}`);
+      }
+      return padHex(num.toString(16));
+    }
+
+    // Int
+    if (/^int\d*$/i.test(t)) {
+      let num = BigInt(value);
+      if (num < 0n) {
+        // two's complement
+        const bits = parseInt(t.replace('int', '') || '256', 10);
+        num = (1n << BigInt(bits)) + num;
+      }
+      return padHex(num.toString(16));
+    }
+
+    // Bytes32
+    if (/^bytes32$/i.test(t)) {
+      return padHex(value, 32);
+    }
+
+    // Bytes / string
+    if (/^bytes$/i.test(t)) {
+      return value.replace(/^0x/, '');
+    }
+    if (/^string$/i.test(t)) {
+      // encode as dynamic
+      return value; // در پیاده‌سازی واقعی: offset + length + data
+    }
+
+    throw new Error(`Unsupported type: ${type}`);
+  }
+
+  function encodeFunctionData(fn, values) {
+    const selector = fn._selector || '0x';
+    const inputs = fn.inputs || [];
+
+    if (inputs.length === 0) return selector;
+
+    // برای انواع ساده (non-dynamic) کافی است
+    const encoded = inputs.map((inp, i) => {
+      return encodeParam(inp.type, values[i]);
+    }).join('');
+
+    return selector + encoded;
+  }
+
+  // ─── ABI Decode ───
+  function decodeParam(type, hex, offset = 0) {
+    // پیاده‌سازی ساده برای انواع پایه
+    const t = type.replace('[]', '');
+    const slice = hex.slice(offset * 64, (offset + 1) * 64);
+    if (!slice) return null;
+
+    if (/^address$/i.test(t)) {
+      return '0x' + slice.slice(24);
+    }
+    if (/^bool$/i.test(t)) {
+      return slice.slice(-1) === '1';
+    }
+    if (/^uint\d*$/i.test(t)) {
+      return BigInt('0x' + slice).toString();
+    }
+    if (/^int\d*$/i.test(t)) {
+      const big = BigInt('0x' + slice);
+      const bits = BigInt(t.replace('int', '') || '256');
+      const max = 1n << (bits - 1n);
+      return (big >= max ? big - (1n << bits) : big).toString();
+    }
+    if (/^string$/i.test(t)) {
+      // offset → length → data
+      return hex; // ساده‌سازی شده
+    }
+    return '0x' + slice;
+  }
+
+  function decodeResult(fn, resultHex) {
+    if (!resultHex || resultHex === '0x') return null;
+
+    const clean = resultHex.replace(/^0x/, '');
+    const outputs = fn.outputs || [];
+
+    if (outputs.length === 0) return null;
+    if (outputs.length === 1) {
+      return decodeParam(outputs[0].type, clean, 0);
+    }
+
+    return outputs.map((o, i) => decodeParam(o.type, clean, i));
+  }
+
+  // ─── Main: Call Read Function ───
+  async function callReadFunction(address, fn, values) {
+    // 1. Selector
+    if (!fn._selector) {
+      fn._selector = await computeSelector(fn);
+    }
+
+    // 2. Encode
+    const data = encodeFunctionData(fn, values);
+
+    // 3. eth_call
+    const result = await RPC.call('eth_call', [
+      { to: address, data },
+      'latest'
+    ]);
+
+    // 4. Decode
+    return decodeResult(fn, result);
+  }
+
+  // ─── Public ───
+  window.APZ_CONTRACT = {
+    callReadFunction,
+    encodeFunctionData,
+    decodeResult,
+    computeSelector,
+    attachSelectors: async (abi) => {
+      const fns = (abi || []).filter((x) => x.type === 'function');
+      for (const fn of fns) {
+        fn._selector = await computeSelector(fn);
+      }
+      return fns;
+    }
+  };
+})();
+```
+
+نکته: این پیاده‌سازی ABI encoding/decoding ساده‌شده است. برای production، از ethers.js یا viem استفاده کنید:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/ethers@6/dist/ethers.umd.min.js"></script>
+```
+
+و در contract-interact.js:
+
+```javascript
+async function callReadFunction(address, fn, values) {
+  const provider = new ethers.JsonRpcProvider(RPC.getCurrentEndpoint());
+  const contract = new ethers.Contract(address, [fn], provider);
+  const result = await contract[fn.name](...values);
+  return result;
+}
+```
+
+---
+
+4️⃣ docs/assets/css/contract.css
+
+```css
+/* ═══════════════════════════════════════════════
+   APZ Wallet — Contract UI Styles
+   ═══════════════════════════════════════════════ */
+
+/* ─── Contract Header ─── */
+.contract-header .result-card-icon.contract {
+  background: rgba(168, 85, 247, 0.12);
+  color: #a855f7;
+}
+
+/* ─── Contract Stats ─── */
+.contract-stats {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.contract-stat {
+  flex: 1;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  text-align: center;
+  transition: var(--transition);
+}
+
+.contract-stat:hover { border-color: var(--border-hover); }
+
+.contract-stat-num {
+  display: block;
+  font-size: 1.6rem;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--neon);
+  letter-spacing: -0.02em;
+}
+
+.contract-stat-label {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dimmer);
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+/* ─── Card Section Title ─── */
+.card-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.card-section-title svg { color: var(--neon); }
+
+/* ─── Function List ─── */
+.fn-list { display: flex; flex-direction: column; gap: 8px; }
+
+/* ─── Function Card ─── */
+.fn-card {
+  background: rgba(15, 20, 28, 0.5);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: var(--transition);
+}
+
+.fn-card:hover { border-color: var(--border-hover); }
+
+.fn-card[open] {
+  border-color: rgba(0, 255, 204, 0.3);
+  box-shadow: 0 0 16px rgba(0, 255, 204, 0.08);
+}
+
+.fn-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  gap: 12px;
+}
+
+.fn-summary::-webkit-details-marker { display: none; }
+
+.fn-summary-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.fn-name {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: var(--neon);
+  white-space: nowrap;
+}
+
+.fn-sig {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-dimmer);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fn-summary-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.fn-chevron {
+  color: var(--text-dimmer);
+  transition: transform 200ms;
+}
+
+.fn-card[open] .fn-chevron { transform: rotate(180deg); }
+
+/* ─── Mutability Badge ─── */
+.mutability-badge {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mutability-badge.view {
+  background: rgba(0, 255, 204, 0.1);
+  color: var(--neon);
+  border: 1px solid rgba(0, 255, 204, 0.25);
+}
+
+.mutability-badge.write {
+  background: rgba(255, 193, 7, 0.1);
+  color: var(--warn);
+  border: 1px solid rgba(255, 193, 7, 0.25);
+}
+
+/* ─── Function Body ─── */
+.fn-body {
+  padding: 0 16px 16px;
+  animation: fnSlide 200ms;
+}
+
+@keyframes fnSlide {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fn-section { margin-bottom: 14px; }
+
+.fn-section-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dimmer);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.fn-no-params {
+  font-size: 0.82rem;
+  color: var(--text-dimmer);
+  font-style: italic;
+  padding: 6px 0;
+}
+
+/* ─── Function Inputs ─── */
+.fn-input-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.fn-input-meta { min-width: 0; }
+
+.fn-input-name {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.fn-input-type {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--neon);
+  opacity: 0.8;
+}
+
+.fn-input-field {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  outline: none;
+  transition: var(--transition);
+  width: 100%;
+}
+
+.fn-input-field:focus {
+  border-color: var(--neon);
+  box-shadow: 0 0 0 2px rgba(0, 255, 204, 0.1);
+}
+
+.fn-input-field::placeholder { color: var(--text-dimmer); }
+
+/* ─── Function Outputs ─── */
+.fn-outputs {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.fn-output-type {
+  display: inline-block;
+  padding: 2px 8px;
+  background: rgba(0, 184, 255, 0.08);
+  border: 1px solid rgba(0, 184, 255, 0.2);
+  border-radius: 6px;
+  color: #00b8ff;
+  margin-right: 4px;
+  margin-bottom: 4px;
+}
+
+/* ─── Call Button ─── */
+.fn-actions { margin-top: 12px; }
+
+.fn-call-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: linear-gradient(135deg, var(--neon), var(--neon-2));
+  color: var(--bg);
+  border: none;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+  box-shadow: 0 4px 16px rgba(0, 255, 204, 0.2);
+}
+
+.fn-call-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 24px rgba(0, 255, 204, 0.4);
+}
+
+.fn-call-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+  transform: none;
+}
+
+/* ─── Function Result ─── */
+.fn-result {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: rgba(0, 255, 136, 0.05);
+  border: 1px solid rgba(0, 255, 136, 0.2);
+  border-radius: 10px;
+  animation: fnSlide 200ms;
+}
+
+.fn-result.error {
+  background: rgba(255, 56, 96, 0.05);
+  border-color: rgba(255, 56, 96, 0.3);
+}
+
+.fn-result-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--success);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.fn-result.error .fn-result-label { color: var(--danger); }
+
+.fn-result-value {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text);
+  word-break: break-all;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+/* ─── Write Notice ─── */
+.fn-write-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(255, 193, 7, 0.06);
+  border: 1px solid rgba(255, 193, 7, 0.2);
+  border-radius: 10px;
+  font-size: 0.78rem;
+  color: var(--warn);
+  margin-top: 10px;
+}
+
+.fn-write-notice svg { flex-shrink: 0; }
+
+/* ─── Events ─── */
+.events-list { display: flex; flex-direction: column; gap: 8px; }
+
+.event-card {
+  padding: 10px 14px;
+  background: rgba(168, 85, 247, 0.05);
+  border: 1px solid rgba(168, 85, 247, 0.15);
+  border-radius: 10px;
+  position: relative;
+}
+
+.event-name {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #a855f7;
+}
+
+.event-sig {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-dimmer);
+  margin-top: 2px;
+}
+
+.event-anon {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 0.6rem;
+  padding: 2px 6px;
+  background: rgba(168, 85, 247, 0.15);
+  color: #a855f7;
+  border-radius: 4px;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+/* ─── Bytecode Preview ─── */
+.bytecode-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.bytecode-preview code {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.bytecode-size {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--neon);
+  padding: 2px 8px;
+  background: rgba(0, 255, 204, 0.08);
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.bytecode-full {
+  margin-top: 10px;
+  padding: 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  word-break: break-all;
+  white-space: pre-wrap;
+  max-height: 300px;
+  overflow-y: auto;
+  line-height: 1.6;
+}
+
+/* ─── ABI Missing Notice ─── */
+.abi-missing-notice {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(255, 193, 7, 0.06);
+  border: 1px solid rgba(255, 193, 7, 0.2);
+  border-radius: 12px;
+  color: var(--warn);
+}
+
+.abi-missing-notice svg { flex-shrink: 0; }
+.abi-missing-notice strong { display: block; margin-bottom: 4px; color: var(--text); }
+.abi-missing-notice p { font-size: 0.82rem; color: var(--text-dim); margin: 0; line-height: 1.6; }
+
+/* ─── Responsive ─── */
+@media (max-width: 640px) {
+  .contract-stats { flex-direction: column; }
+  .fn-input-row { grid-template-columns: 1fr; gap: 6px; }
+  .fn-sig { display: none; }
+}
+```
+
+---
+
+5️⃣ 🔄 ادغام در explorer.js
+
+این تغییرات را در docs/assets/js/explorer.js اعمال کنید:
+
+```javascript
+// ─── در بالای فایل ───
+const ABI = window.APZ_ABI;
+const CONTRACT_UI = window.APZ_CONTRACT_UI;
+const CONTRACT = window.APZ_CONTRACT;
+
+// ─── جایگزین بخش address در performSearch ───
+async function performSearch(query) {
+  const section = document.getElementById('result-section');
+  const loading = document.getElementById('result-loading');
+  const error = document.getElementById('result-error');
+  const content = document.getElementById('result-content');
+
+  section.hidden = false;
+  loading.hidden = false;
+  error.hidden = true;
+  content.hidden = true;
+
+  const type = detectType(query);
+
+  try {
+    let html = '';
+
+    if (type === 'tx') {
+      const { tx, receipt } = await RPC.getTransactionWithReceipt(query);
+      if (!tx) throw new Error('TX_NOT_FOUND');
+      html = renderTransaction(tx, receipt);
+    } else if (type === 'address') {
+      // ✨ تشخیص contract vs EOA
+      const info = await RPC.getAddressInfo(query);
+
+      if (info.isContract) {
+        // دریافت ABI
+        const chainId = RPC.hexToNumber(await RPC.getChainId());
+        const abiInfo = await ABI.fetchABI(chainId, query);
+        const bytecode = await RPC.getCode(query);
+
+        // انتخاب selectorها
+        if (abiInfo.abi) {
+          await CONTRACT.attachSelectors(abiInfo.abi);
+        }
+
+        html = CONTRACT_UI.renderContract(query, abiInfo, bytecode, showToast);
+      } else {
+        html = renderAddress(info);
+      }
+    } else if (type === 'block') {
+      const block = await RPC.getBlockByNumber(query, false);
+      if (!block) throw new Error('BLOCK_NOT_FOUND');
+      html = renderBlock(block);
+    } else {
+      throw new Error('UNKNOWN_TYPE');
+    }
+
+    content.innerHTML = html;
+    bindCopyButtons(content);
+
+    // ✨ Bind contract interactions
+    if (type === 'address' && content.querySelector('.contract-header')) {
+      bindContractInteractions(content, query);
+    }
+
+    loading.hidden = true;
+    content.hidden = false;
+  } catch (err) {
+    // ... error handling
+  }
+}
+
+// ─── Bind Contract Interactions ───
+function bindContractInteractions(container, address) {
+  // Copy bytecode
+  document.getElementById('copy-bytecode-btn')?.addEventListener('click', () => {
+    const bytecode = document.getElementById('bytecode-full')?.textContent || '';
+    copyToClipboard(bytecode);
+  });
+
+  // Toggle bytecode
+  document.getElementById('toggle-bytecode-btn')?.addEventListener('click', () => {
+    const full = document.getElementById('bytecode-full');
+    if (full) {
+      full.hidden = !full.hidden;
+      document.getElementById('toggle-bytecode-btn').textContent =
+        full.hidden ? '👁 View Full' : '👁 Hide';
+    }
+  });
+
+  // Call buttons
+  container.querySelectorAll('.fn-call-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const fnIndex = parseInt(btn.dataset.callIndex, 10);
+      const fnCard = btn.closest('.fn-card');
+      const resultBox = document.getElementById(`fn-result-${fnIndex}`);
+
+      // جمع‌آوری مقادیر ورودی
+      const inputs = fnCard.querySelectorAll('.fn-input-field');
+      const values = Array.from(inputs).map((inp) => inp.value);
+
+      // اعتبارسنجی
+      if (values.some((v) => v === '')) {
+        showToast('لطفاً همه پارامترها را پر کنید', 'error');
+        return;
+      }
+
+      // پیدا کردن تابع از ABI
+      const fn = window.__currentABI?.[fnIndex];
+      if (!fn) {
+        showToast('تابع یافت نشد', 'error');
+        return;
+      }
+
+      btn.disabled = true;
+      const originalText = btn.innerHTML;
+      btn.innerHTML = `<span class="spinner-inline"></span> در حال فراخوانی...`;
+
+      try {
+        const result = await CONTRACT.callReadFunction(address, fn, values);
+
+        resultBox.hidden = false;
+        resultBox.className = 'fn-result';
+        resultBox.querySelector('.fn-result-label').textContent = 'Result';
+        resultBox.querySelector('.fn-result-value').textContent =
+          typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result);
+      } catch (err) {
+        console.error('[Contract] Call failed:', err);
+        resultBox.hidden = false;
+        resultBox.className = 'fn-result error';
+        resultBox.querySelector('.fn-result-label').textContent = 'Error';
+        resultBox.querySelector('.fn-result-value').textContent =
+          err.message || 'Call reverted';
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+      }
+    });
+  });
+}
+
+// ─── ذخیره ABI فعلی برای دسترسی در bindContractInteractions ───
+// در performSearch، بعد از دریافت abiInfo:
+if (abiInfo.abi) {
+  window.__currentABI = abiInfo.abi.filter((x) => x.type === 'function');
+}
+```
+
+---
+
+6️⃣ 🔄 افزودن به sw.js
+
+در STATIC_ASSETS:
+
+```javascript
+'./assets/css/contract.css',
+'./assets/js/abi-fetcher.js',
+'./assets/js/contract-ui.js',
+'./assets/js/contract-interact.js'
+```
+
+---
+
+7️⃣ 🔄 افزودن به explorer.html
+
+در <head>:
+
+```html
+<link rel="stylesheet" href="assets/css/contract.css" />
+```
+
+قبل از explorer.js:
+
+```html
+<script src="assets/js/abi-fetcher.js"></script>
+<script src="assets/js/contract-ui.js"></script>
+<script src="assets/js/contract-interact.js"></script>
+<script src="assets/js/explorer.js"></script>
+```
+
+---
+
+8️⃣ 📊 پیش‌نمایش UI
+
+```
+╔══════════════════════════════════════════════════════════╗
+║  Smart Contract  [✓ Verified]                           ║
+║  0x742d35Cc...f0bEb                                    ║
+╠══════════════════════════════════════════════════════════╣
+║  Address   0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb  ║
+║  Source    Sourcify (full_match)                        ║
+║  Compiler  solc 0.8.20                                 ║
+║  Bytecode  [6080604052...] 24,567 bytes                ║
+╠══════════════════════════════════════════════════════════╣
+║  ┌────────────┐ ┌────────────┐                        ║
+║  │     12     │ │      3     │                        ║
+║  │  functions │ │   events   │                        ║
+║  └────────────┘ └────────────┘                        ║
+╠══════════════════════════════════════════════════════════╣
+║  👁 Read Functions (8)                                  ║
+║  ┌────────────────────────────────────────────────────┐ ║
+║  │ ▸ balanceOf(address)              [view]         │ ║
+║  │ ▸ totalSupply()                   [view]         │ ║
+║  │ ▾ name()                          [view]         │ ║
+║  │   Inputs:  No parameters                         │ ║
+║  │   Output:  string                                │ ║
+║  │   [ 🔍 Query ]                                   │ ║
+║  │   Result: "APZ Token"                            │ ║
+║  └────────────────────────────────────────────────────┘ ║
+║  ┌────────────────────────────────────────────────────┐ ║
+║  │ ▸ symbol()                        [view]         │ ║
+║  │ ▸ decimals()                      [view]         │ ║
+║  └────────────────────────────────────────────────────┘ ║
+╠══════════════════════════════════════════════════════════╣
+║  ✏ Write Functions (4)                                  ║
+║  ┌────────────────────────────────────────────────────┐ ║
+║  │ ▸ transfer(address,uint256)      [nonpayable]    │ ║
+║  │   ⚠ تابع نوشتنی — نیاز به امضای تراکنش دارد        │ ║
+║  └────────────────────────────────────────────────────┘ ║
+╠══════════════════════════════════════════════════════════╣
+║  🔔 Events (3)                                          ║
+║  ┌────────────────────────────────────────────────────┐ ║
+║  │ Transfer(address,address,uint256)                 │ ║
+║  │ Approval(address,address,uint256)                 │ ║
+║  └────────────────────────────────────────────────────┘ ║
+╚══════════════════════════════════════════════════════════╝
+```
+
+---
+
+9️⃣ 🧪 تست
+
+تست ABI Fetch:
+
+```javascript
+// در کنسول Explorer:
+const chainId = 1;
+const addr = '0xdAC17F958D2ee523a2206206994597C13D831ec7'; // USDT
+const abiInfo = await APZ_ABI.fetchABI(chainId, addr);
+console.log(abiInfo);
+```
+
+تست فراخوانی:
+
+```javascript
+const fn = abiInfo.abi.find((x) => x.name === 'name');
+fn._selector = await APZ_CONTRACT.computeSelector(fn);
+const result = await APZ_CONTRACT.callReadFunction(addr, fn, []);
+console.log(result); // "Tether USD"
+```
+
+از UI:
+
+1. به explorer.html بروید
+2. آدرس یک قرارداد (مثلاً USDT) را وارد کنید
+3. ABI و توابع نمایش داده می‌شوند
+4. روی name() کلیک کنید → Query → نتیجه نمایش داده می‌شود
+
+---
+
+🔟 📋 چک‌لیست نهایی
+
+☐ abi-fetcher.js ساخته شد (Sourcify + Etherscan + heimdall)
+☐ contract-ui.js ساخته شد (رندر ABI و توابع)
+☐ contract-interact.js ساخته شد (eth_call + encoding)
+☐ contract.css ساخته شد
+☐ explorer.js به‌روز شد (تشخیص contract/EOA)
+☐ explorer.html به‌روز شد (اسکریپت‌ها + CSS)
+☐ sw.js precache شد
+☐ i18n (FA/EN/DE) اضافه شد
+☐ تست با USDT contract موفق
+☐ تست توابع read-only موفق
+
+---
+
+1️⃣1️⃣ 🎁 نکات پیشرفته
+
+افزودن ethers.js برای encoding دقیق:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/ethers@6/dist/ethers.umd.min.js"></script>
+```
+
+افزودن Proxy Detection (EIP-1967):
+
+```javascript
+async function detectProxy(address) {
+  const IMPLEMENTATION_SLOT = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc';
+  const impl = await RPC.call('eth_getStorageAt', [address, IMPLEMENTATION_SLOT, 'latest']);
+  const implAddress = '0x' + impl.slice(26);
+  if (implAddress !== '0x0000000000000000000000000000000000000000') {
+    return implAddress;
+  }
+  return null;
+}
+```
+
+نمایش Source Code:
+
+با Sourcify می‌توانید source code را هم دریافت کنید:
+
+```javascript
+const sourceUrl = `https://repo.sourcify.dev/contracts/full_match/${chainId}/${address}/sources/`;
+```
