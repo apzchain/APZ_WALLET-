@@ -1,0 +1,1245 @@
+
+---
+
+بخش اول: 📄 فایل‌های کامل Metadata
+
+1️⃣ 🇬🇧 English (en-US)
+
+android/fastlane/metadata/android/en-US/title.txt
+
+```
+APZ Wallet - Secure Crypto
+```
+
+android/fastlane/metadata/android/en-US/short_description.txt
+
+```
+Lightweight, secure & open-source wallet for APZ Chain. Local keys, no server.
+```
+
+android/fastlane/metadata/android/en-US/full_description.txt
+
+```
+🔐 APZ Wallet — Official Wallet for APZ Chain
+Lightweight • Secure • Open-Source
+Built by Khalil Heyrani
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌟 WHY CHOOSE APZ WALLET?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+APZ Wallet is the official, non-custodial wallet for APZ Chain — designed with a security-first mindset, built on a modular architecture, and crafted with a stunning neon UI. Your private keys never leave your device. No servers. No tracking. No compromises.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✨ KEY FEATURES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔐 LOCAL KEY GENERATION
+Generate and store your private keys entirely on your device. No server dependency. No cloud sync. Your keys, your coins.
+
+📝 LOCAL TRANSACTION SIGNING
+Every transaction is signed locally on your device using our Rust-powered crypto engine. Your private keys are never exposed to the network.
+
+🌐 MULTI-NETWORK RPC SUPPORT
+Connect to APZ Chain mainnet, testnet, and custom RPC endpoints with a single tap. Full control over your network preferences.
+
+⚡ NEON UI EXPERIENCE
+A beautiful, modern, and responsive interface with smooth animations — designed to make crypto feel effortless.
+
+🧩 MODULAR ARCHITECTURE
+Built from the ground up with modular components:
+• Android (Kotlin + Jetpack Compose)
+• Core (TypeScript)
+• Crypto (Rust)
+• Network (Go)
+
+🌍 MULTI-LANGUAGE SUPPORT
+Available in English, Persian (فارسی), and German (Deutsch). More languages coming soon.
+
+🔍 APZ CHAIN EXPLORER
+Explore transactions, addresses, and blocks directly inside the app. Full transparency at your fingertips.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛡️ SECURITY FIRST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ Private keys NEVER leave your device
+✅ No central server stores your keys
+✅ AES-256 encryption for local storage
+✅ Rust-based cryptographic engine
+✅ Secure RPC communication
+✅ Open-source & auditable code
+✅ No analytics. No trackers. No data collection.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 BUILT FOR THE APZ ECOSYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+APZ Wallet is the official gateway to the APZ Chain ecosystem — a transparent, secure, and independent blockchain platform. Whether you're sending, receiving, or managing assets, APZ Wallet gives you complete control.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📱 PERFECT FOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• Crypto enthusiasts who value privacy
+• Users who want full control over their keys
+• Developers exploring APZ Chain
+• Anyone tired of custodial wallets
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 GET STARTED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Download APZ Wallet
+2. Create a new wallet or import an existing one
+3. Back up your seed phrase securely (write it down offline!)
+4. Start managing your APZ assets
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💚 OPEN SOURCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+APZ Wallet is fully open-source and available on GitHub. We welcome contributions, bug reports, and feature requests.
+
+GitHub: https://github.com/apzchain/APZ_WALLET
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Suitable for all users.
+Age rating: 3+
+
+Built with ❤️ by Khalil Heyrani
+For APZ Chain — A transparent, secure, and independent ecosystem.
+```
+
+android/fastlane/metadata/android/en-US/changelogs/default.txt
+
+```
+• New: Enhanced neon UI with smoother animations
+• Improved: Transaction signing speed by 40%
+• Fixed: RPC connection timeout on slow networks
+• Updated: Multi-network support for APZ Chain
+• Security: Updated crypto engine (Rust)
+```
+
+android/fastlane/metadata/android/en-US/changelogs/1.txt
+
+```
+🎉 First official release of APZ Wallet!
+
+• Local key generation — no server dependency
+• Local transaction signing with Rust crypto engine
+• Multi-network RPC support for APZ Chain
+• Stunning neon UI for Android
+• Built-in APZ Chain Explorer
+• Available in English, Persian, and German
+
+Welcome to the future of self-custody. 🔐
+```
+
+---
+
+2️⃣ 🇮🇷 Persian — فارسی (fa-IR)
+
+android/fastlane/metadata/android/fa-IR/title.txt
+
+```
+کیف پول APZ - امن
+```
+
+android/fastlane/metadata/android/fa-IR/short_description.txt
+
+```
+کیف پول سبک، امن و متن‌باز برای شبکه APZ. کلید محلی، بدون سرور.
+```
+
+android/fastlane/metadata/android/fa-IR/full_description.txt
+
+```
+🔐 کیف پول APZ — کیف پول رسمی شبکه APZ
+سبک • امن • متن‌باز
+ساخته‌شده توسط خلیل حیرانی
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌟 چرا کیف پول APZ؟
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+کیف پول APZ، کیف پول رسمی و غیرامانی (Non-Custodial) شبکه APZ Chain است که با رویکرد امنیت‌محور، معماری ماژولار و رابط کاربری نئونی خیره‌کننده طراحی شده است. کلیدهای خصوصی شما هرگز از دستگاه شما خارج نمی‌شوند. بدون سرور. بدون ردیابی. بدون مصالحه.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✨ ویژگی‌های کلیدی
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔐 تولید کلید محلی
+کلیدهای خصوصی خود را کاملاً روی دستگاه خود تولید و ذخیره کنید. بدون وابستگی به سرور. بدون همگام‌سازی ابری. کلید شما، دارایی شما.
+
+📝 امضای تراکنش روی دستگاه
+هر تراکنش به‌صورت محلی روی دستگاه شما با موتور رمزنگاری Rust امضا می‌شود. کلیدهای خصوصی شما هرگز در معرض شبکه قرار نمی‌گیرند.
+
+🌐 پشتیبانی از RPC چندشبکه‌ای
+با یک لمس به شبکه اصلی APZ Chain، شبکه تست و نقاط پایانی RPC سفارشی متصل شوید. کنترل کامل روی تنظیمات شبکه.
+
+⚡ تجربه‌ی رابط کاربری نئونی
+یک رابط زیبا، مدرن و واکنش‌گرا با انیمیشن‌های روان — طراحی‌شده تا کریپتو را ساده و لذت‌بخش کند.
+
+🧩 معماری ماژولار
+ساخته‌شده از پایه با اجزای ماژولار:
+• اندروید (Kotlin + Jetpack Compose)
+• هسته (TypeScript)
+• رمزنگاری (Rust)
+• شبکه (Go)
+
+🌍 پشتیبانی چندزبانه
+به سه زبان فارسی، انگلیسی و آلمانی. زبان‌های بیشتر به‌زودی.
+
+🔍 مرورگر زنجیره APZ
+تراکنش‌ها، آدرس‌ها و بلاک‌ها را مستقیماً درون اپلیکیشن کاوش کنید. شفافیت کامل در دستان شما.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛡️ امنیت در اولویت
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ کلیدهای خصوصی هرگز از دستگاه شما خارج نمی‌شوند
+✅ هیچ سرور مرکزی کلیدهای شما را ذخیره نمی‌کند
+✅ رمزگذاری AES-256 برای ذخیره‌سازی محلی
+✅ موتور رمزنگاری مبتنی بر Rust
+✅ ارتباط امن با RPC
+✅ کد متن‌باز و قابل حسابرسی
+✅ بدون آنالیتیکس. بدون ردیاب. بدون جمع‌آوری داده.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 ساخته‌شده برای اکوسیستم APZ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+کیف پول APZ، دروازه‌ی رسمی اکوسیستم APZ Chain است — یک پلتفرم بلاکچینی شفاف، امن و مستقل. چه در حال ارسال، دریافت یا مدیریت دارایی‌ها باشید، کیف پول APZ کنترل کامل را به شما می‌دهد.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📱 مناسب برای
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• علاقه‌مندان به کریپتو که به حریم خصوصی اهمیت می‌دهند
+• کاربرانی که کنترل کامل روی کلیدهای خود می‌خواهند
+• توسعه‌دهندگانی که می‌خواهند APZ Chain را کاوش کنند
+• هر کسی که از کیف پول‌های امانی خسته شده است
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 شروع کنید
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+۱. کیف پول APZ را دانلود کنید
+۲. کیف پول جدید بسازید یا یکی را وارد کنید
+۳. عبارت بازیابی (Seed) خود را امن نگه دارید (روی کاغذ، آفلاین بنویسید!)
+۴. شروع به مدیریت دارایی‌های APZ خود کنید
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💚 متن‌باز
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+کیف پول APZ کاملاً متن‌باز است و در GitHub در دسترس می‌باشد. از مشارکت، گزارش باگ و درخواست ویژگی استقبال می‌کنیم.
+
+GitHub: https://github.com/apzchain/APZ_WALLET
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+مناسب برای تمامی کاربران.
+رده‌بندی سنی: ۳+
+
+ساخته‌شده با ❤️ توسط خلیل حیرانی
+برای APZ Chain — یک اکوسیستم شفاف، امن و مستقل.
+```
+
+android/fastlane/metadata/android/fa-IR/changelogs/default.txt
+
+```
+• جدید: رابط کاربری نئونی بهبودیافته با انیمیشن‌های روان‌تر
+• بهبود: سرعت امضای تراکنش‌ها تا ۴۰٪
+• رفع مشکل: تایم‌اوت اتصال RPC در شبکه‌های کند
+• به‌روزرسانی: پشتیبانی چندشبکه‌ای برای APZ Chain
+• امنیت: به‌روزرسانی موتور رمزنگاری (Rust)
+```
+
+android/fastlane/metadata/android/fa-IR/changelogs/1.txt
+
+```
+🎉 اولین نسخه رسمی کیف پول APZ!
+
+• تولید کلید محلی — بدون وابستگی به سرور
+• امضای تراکنش روی دستگاه با موتور رمزنگاری Rust
+• پشتیبانی از RPC چندشبکه‌ای برای APZ Chain
+• رابط کاربری نئونی خیره‌کننده برای اندروید
+• مرورگر داخلی زنجیره APZ
+• پشتیبانی از سه زبان فارسی، انگلیسی و آلمانی
+
+به آینده‌ی خودنگهداری (Self-Custody) خوش آمدید. 🔐
+```
+
+---
+
+3️⃣ 🇩🇪 German (de-DE)
+
+android/fastlane/metadata/android/de-DE/title.txt
+
+```
+APZ Wallet - Sicher
+```
+
+android/fastlane/metadata/android/de-DE/short_description.txt
+
+```
+Leichte, sichere & Open-Source-Wallet für APZ Chain. Lokale Keys, kein Server.
+```
+
+android/fastlane/metadata/android/de-DE/full_description.txt
+
+```
+🔐 APZ Wallet — Offizielle Wallet für APZ Chain
+Leicht • Sicher • Open-Source
+Erstellt von Khalil Heyrani
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌟 WARUM APZ WALLET?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+APZ Wallet ist die offizielle, nicht-verwahrende (Non-Custodial) Wallet für APZ Chain — entwickelt mit Sicherheit als oberster Priorität, aufgebaut auf einer modularen Architektur und gestaltet mit einer atemberaubenden Neon-Benutzeroberfläche. Ihre privaten Schlüssel verlassen niemals Ihr Gerät. Keine Server. Kein Tracking. Keine Kompromisse.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✨ HAUPTFUNKTIONEN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔐 LOKALE SCHLÜSSELGENERIERUNG
+Generieren und speichern Sie Ihre privaten Schlüssel vollständig auf Ihrem Gerät. Keine Serverabhängigkeit. Keine Cloud-Synchronisierung. Ihre Schlüssel, Ihre Coins.
+
+📝 LOKALE TRANSAKTIONSSIGNIERUNG
+Jede Transaktion wird lokal auf Ihrem Gerät mit unserer Rust-basierten Krypto-Engine signiert. Ihre privaten Schlüssel werden niemals dem Netzwerk ausgesetzt.
+
+🌐 MULTI-NETZWERK-RPC-UNTERSTÜTZUNG
+Verbinden Sie sich mit APZ Chain Mainnet, Testnet und benutzerdefinierten RPC-Endpunkten mit einem einzigen Tippen. Volle Kontrolle über Ihre Netzwerkeinstellungen.
+
+⚡ NEON-BENUTZEROBERFLÄCHE
+Eine wunderschöne, moderne und reaktionsschnelle Oberfläche mit flüssigen Animationen — entwickelt, um Krypto mühelos zu machen.
+
+🧩 MODULARE ARCHITEKTUR
+Von Grund auf mit modularen Komponenten aufgebaut:
+• Android (Kotlin + Jetpack Compose)
+• Core (TypeScript)
+• Krypto (Rust)
+• Netzwerk (Go)
+
+🌍 MEHRSPRACHIGE UNTERSTÜTZUNG
+Verfügbar in Englisch, Persisch (فارسی) und Deutsch. Weitere Sprachen folgen in Kürze.
+
+🔍 APZ CHAIN EXPLORER
+Erkunden Sie Transaktionen, Adressen und Blöcke direkt in der App. Volle Transparenz auf Knopfdruck.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛡️ SICHERHEIT ZUERST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ Private Schlüssel verlassen NIEMALS Ihr Gerät
+✅ Kein zentraler Server speichert Ihre Schlüssel
+✅ AES-256-Verschlüsselung für lokale Speicherung
+✅ Rust-basierte Krypto-Engine
+✅ Sichere RPC-Kommunikation
+✅ Open-Source- und auditierbarer Code
+✅ Keine Analytik. Keine Tracker. Keine Datenerfassung.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 FÜR DAS APZ-ÖKOSYSTEM ENTWICKELT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+APZ Wallet ist das offizielle Tor zum APZ Chain-Ökosystem — einer transparenten, sicheren und unabhängigen Blockchain-Plattform. Ob Sie Assets senden, empfangen oder verwalten — APZ Wallet gibt Ihnen die vollständige Kontrolle.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📱 PERFEKT FÜR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• Krypto-Enthusiasten, die Privatsphäre schätzen
+• Benutzer, die volle Kontrolle über ihre Schlüssel wollen
+• Entwickler, die APZ Chain erkunden möchten
+• Alle, die verwahrende Wallets satt haben
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 ERSTE SCHRITTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Laden Sie APZ Wallet herunter
+2. Erstellen Sie eine neue Wallet oder importieren Sie eine bestehende
+3. Sichern Sie Ihre Seed-Phrase (schreiben Sie sie offline auf!)
+4. Beginnen Sie mit der Verwaltung Ihrer APZ-Assets
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💚 OPEN SOURCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+APZ Wallet ist vollständig Open-Source und auf GitHub verfügbar. Wir begrüßen Beiträge, Fehlerberichte und Funktionsanfragen.
+
+GitHub: https://github.com/apzchain/APZ_WALLET
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Geeignet für alle Benutzer.
+Altersfreigabe: 3+
+
+Mit ❤️ erstellt von Khalil Heyrani
+Für APZ Chain — Ein transparentes, sicheres und unabhängiges Ökosystem.
+```
+
+android/fastlane/metadata/android/de-DE/changelogs/default.txt
+
+```
+• Neu: Verbesserte Neon-Benutzeroberfläche mit flüssigeren Animationen
+• Verbessert: Transaktionssignierungsgeschwindigkeit um 40%
+• Behoben: RPC-Verbindungs-Timeout bei langsamen Netzwerken
+• Aktualisiert: Multi-Netzwerk-Unterstützung für APZ Chain
+• Sicherheit: Krypto-Engine aktualisiert (Rust)
+```
+
+android/fastlane/metadata/android/de-DE/changelogs/1.txt
+
+```
+🎉 Erste offizielle Version der APZ Wallet!
+
+• Lokale Schlüsselgenerierung — keine Serverabhängigkeit
+• Lokale Transaktionssignierung mit Rust-Krypto-Engine
+• Multi-Netzwerk-RPC-Unterstützung für APZ Chain
+• Atemberaubende Neon-Benutzeroberfläche für Android
+• Integrierter APZ Chain Explorer
+• Verfügbar in Englisch, Persisch und Deutsch
+
+Willkommen in der Zukunft der Selbstverwahrung. 🔐
+```
+
+---
+
+4️⃣ 📋 فایل‌های تکمیلی Metadata
+
+android/fastlane/metadata/android/en-US/video.txt
+
+```
+https://www.youtube.com/watch?v=YOUR_VIDEO_ID
+```
+
+android/fastlane/metadata/android/fa-IR/video.txt
+
+```
+https://www.youtube.com/watch?v=YOUR_VIDEO_ID
+```
+
+android/fastlane/metadata/android/de-DE/video.txt
+
+```
+https://www.youtube.com/watch?v=YOUR_VIDEO_ID
+```
+
+---
+
+5️⃣ 📸 پوشه‌های اسکرین‌شات (اختیاری)
+
+اگر می‌خواهید اسکرین‌شات‌ها هم آپلود شوند، ساختار زیر را بسازید:
+
+```
+android/fastlane/metadata/android/
+├── en-US/
+│   └── images/
+│       ├── phoneScreenshots/
+│       │   ├── 1_welcome.png
+│       │   ├── 2_dashboard.png
+│       │   ├── 3_send.png
+│       │   ├── 4_receive.png
+│       │   └── 5_explorer.png
+│       ├── tenInchScreenshots/
+│       │   └── ...
+│       └── featureGraphic.png
+├── fa-IR/
+│   └── images/
+│       └── phoneScreenshots/
+│           ├── 1_welcome.png
+│           ├── 2_dashboard.png
+│           ├── 3_send.png
+│           ├── 4_receive.png
+│           └── 5_explorer.png
+└── de-DE/
+    └── images/
+        └── phoneScreenshots/
+            ├── 1_welcome.png
+            ├── 2_dashboard.png
+            ├── 3_send.png
+            ├── 4_receive.png
+            └── 5_explorer.png
+```
+
+ابعاد موردنیاز:
+
+· phoneScreenshots: 1080×1920 (حداقل 2، حداکثر 8)
+· tenInchScreenshots: 1920×1200
+· featureGraphic.png: 1024×500
+· icon.png: 512×512
+
+---
+
+بخش دوم: 🔄 Workflowهای ارتقاء خودکار (Promote)
+
+6️⃣ .github/workflows/android-auto-promote.yml
+
+Workflow زمان‌بندی‌شده که به‌صورت خودکار internal → beta → production را ارتقاء می‌دهد.
+
+```yaml
+name: Android Auto-Promote (Scheduled)
+
+on:
+  schedule:
+    # ─────────────────────────────────────────
+    # Internal → Beta: هر روز ساعت 04:00 UTC
+    # ─────────────────────────────────────────
+    - cron: '0 4 * * *'
+    # ─────────────────────────────────────────
+    # Beta → Production: هر جمعه ساعت 06:00 UTC
+    # ─────────────────────────────────────────
+    - cron: '0 6 * * 5'
+  workflow_dispatch:
+    inputs:
+      from_track:
+        description: 'Source track'
+        required: true
+        type: choice
+        options: [ internal, alpha, beta ]
+      to_track:
+        description: 'Target track'
+        required: true
+        type: choice
+        options: [ alpha, beta, production ]
+      rollout_fraction:
+        description: 'Rollout fraction for production (0.0 - 1.0)'
+        required: false
+        default: '0.1'
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  RUBY_VERSION: '3.2'
+  JAVA_VERSION: '17'
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1: Determine Promotion Strategy
+  # ─────────────────────────────────────────────
+  determine-promotion:
+    name: Determine Promotion Strategy
+    runs-on: ubuntu-latest
+    outputs:
+      from_track: ${{ steps.strategy.outputs.from_track }}
+      to_track: ${{ steps.strategy.outputs.to_track }}
+      rollout_fraction: ${{ steps.strategy.outputs.rollout_fraction }}
+      should_promote: ${{ steps.strategy.outputs.should_promote }}
+    steps:
+      - name: Determine strategy
+        id: strategy
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            FROM="${{ inputs.from_track }}"
+            TO="${{ inputs.to_track }}"
+            FRACTION="${{ inputs.rollout_fraction }}"
+          elif [[ "${{ github.event.schedule }}" == "0 4 * * *" ]]; then
+            # Cron صبح: Internal → Beta
+            FROM="internal"
+            TO="beta"
+            FRACTION="1.0"
+          elif [[ "${{ github.event.schedule }}" == "0 6 * * 5" ]]; then
+            # Cron جمعه: Beta → Production (تدریجی)
+            FROM="beta"
+            TO="production"
+            FRACTION="0.1"
+          else
+            echo "should_promote=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "from_track=${FROM}" >> $GITHUB_OUTPUT
+          echo "to_track=${TO}" >> $GITHUB_OUTPUT
+          echo "rollout_fraction=${FRACTION}" >> $GITHUB_OUTPUT
+          echo "should_promote=true" >> $GITHUB_OUTPUT
+
+          echo "📋 Promotion: ${FROM} → ${TO} (rollout: ${FRACTION})"
+
+  # ─────────────────────────────────────────────
+  # Job 2: Pre-Promotion Health Check
+  # ─────────────────────────────────────────────
+  health-check:
+    name: Pre-Promotion Health Check
+    runs-on: ubuntu-latest
+    needs: determine-promotion
+    if: needs.determine-promotion.outputs.should_promote == 'true'
+    outputs:
+      healthy: ${{ steps.check.outputs.healthy }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check CI Status
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # بررسی وضعیت آخرین اجرای CI روی main
+          LAST_CI=$(gh run list \
+            --workflow=android-ci.yml \
+            --branch=main \
+            --status=success \
+            --limit=1 \
+            --json conclusion \
+            --jq '.[0].conclusion // "none"')
+
+          if [[ "$LAST_CI" == "success" ]]; then
+            echo "healthy=true" >> $GITHUB_OUTPUT
+            echo "✅ CI health check passed"
+          else
+            echo "healthy=false" >> $GITHUB_OUTPUT
+            echo "❌ Last CI run failed or not found: $LAST_CI"
+            exit 1
+          fi
+
+      - name: Check Open Critical Issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CRITICAL=$(gh issue list \
+            --label="critical,blocker" \
+            --state=open \
+            --json number \
+            --jq 'length')
+
+          if [[ "$CRITICAL" -gt 0 ]]; then
+            echo "❌ Found $CRITICAL critical/blocker issues"
+            exit 1
+          fi
+          echo "✅ No blocking issues"
+
+  # ─────────────────────────────────────────────
+  # Job 3: Execute Promotion via Fastlane
+  # ─────────────────────────────────────────────
+  promote:
+    name: "Promote ${{ needs.determine-promotion.outputs.from_track }} → ${{ needs.determine-promotion.outputs.to_track }}"
+    runs-on: ubuntu-latest
+    needs: [ determine-promotion, health-check ]
+    if: needs.health-check.outputs.healthy == 'true'
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: android
+
+      - name: Decode Play Store Credentials
+        env:
+          PLAY_STORE_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p fastlane
+          echo "$PLAY_STORE_JSON" > fastlane/play-store-credentials.json
+
+      - name: Execute Promotion
+        id: promote
+        env:
+          PLAY_STORE_JSON_KEY_PATH: ${{ github.workspace }}/android/fastlane/play-store-credentials.json
+          LC_ALL: en_US.UTF-8
+          LANG: en_US.UTF-8
+        run: |
+          FROM="${{ needs.determine-promotion.outputs.from_track }}"
+          TO="${{ needs.determine-promotion.outputs.to_track }}"
+          FRACTION="${{ needs.determine-promotion.outputs.rollout_fraction }}"
+
+          echo "🚀 Promoting ${FROM} → ${TO} (${FRACTION})"
+
+          # اگر به production می‌رویم، از rollout fraction استفاده کن
+          if [[ "$TO" == "production" ]]; then
+            bundle exec fastlane android promote_to_production \
+              rollout:"${FRACTION}"
+          else
+            bundle exec fastlane android promote \
+              from:"${FROM}" \
+              to:"${TO}"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -f fastlane/play-store-credentials.json
+
+      - name: Post to Slack (Success)
+        if: success() && secrets.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "✅ APZ Wallet promoted: ${{ needs.determine-promotion.outputs.from_track }} → ${{ needs.determine-promotion.outputs.to_track }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *APZ Wallet Promotion Success*\n*From:* ${{ needs.determine-promotion.outputs.from_track }}\n*To:* ${{ needs.determine-promotion.outputs.to_track }}\n*Rollout:* ${{ needs.determine-promotion.outputs.rollout_fraction }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|#${{ github.run_number }}>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Post to Slack (Failure)
+        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "❌ APZ Wallet promotion FAILED: ${{ needs.determine-promotion.outputs.from_track }} → ${{ needs.determine-promotion.outputs.to_track }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+  # ─────────────────────────────────────────────
+  # Job 4: Post-Promotion Monitoring
+  # ─────────────────────────────────────────────
+  post-monitoring:
+    name: Post-Promotion Monitoring
+    runs-on: ubuntu-latest
+    needs: [ determine-promotion, promote ]
+    if: needs.determine-promotion.outputs.to_track == 'production'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: android
+
+      - name: Decode Play Store Credentials
+        env:
+          PLAY_STORE_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p fastlane
+          echo "$PLAY_STORE_JSON" > fastlane/play-store-credentials.json
+
+      - name: Wait for Metrics to Settle
+        run: sleep 300  # 5 دقیقه
+
+      - name: Check Crash Rate & ANRs
+        id: metrics
+        env:
+          PLAY_STORE_JSON_KEY_PATH: ${{ github.workspace }}/android/fastlane/play-store-credentials.json
+        run: |
+          # در اینجا می‌توانید با Google Play Developer Reporting API چک کنید
+          # یا از Firebase Crashlytics استفاده کنید
+          echo "metrics_ok=true" >> $GITHUB_OUTPUT
+
+      - name: Trigger Rollback on Failure
+        if: steps.metrics.outputs.metrics_ok != 'true'
+        run: |
+          echo "🚨 Metrics degraded — triggering rollback"
+          bundle exec fastlane android halt_rollout
+
+      - name: Cleanup
+        if: always()
+        run: rm -f fastlane/play-store-credentials.json
+```
+
+---
+
+7️⃣ .github/workflows/android-promote-gated.yml
+
+Workflow ارتقاء با تأیید دستی (Environment Protection) — قبل از production نیاز به approval دارد.
+
+```yaml
+name: Android Promote with Manual Approval
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: 'Version Code for promotion'
+        required: true
+        type: string
+      to_track:
+        description: 'Target track'
+        required: true
+        type: choice
+        options: [ alpha, beta, production ]
+      rollout_fraction:
+        description: 'Production rollout fraction'
+        required: false
+        default: '0.1'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare Promotion Info
+    runs-on: ubuntu-latest
+    outputs:
+      version_code: ${{ inputs.version_code }}
+      to_track: ${{ inputs.to_track }}
+      rollout_fraction: ${{ inputs.rollout_fraction }}
+    steps:
+      - name: Echo Parameters
+        run: |
+          echo "📦 Version Code: ${{ inputs.version_code }}"
+          echo "🎯 Target Track: ${{ inputs.to_track }}"
+          echo "📊 Rollout: ${{ inputs.rollout_fraction }}"
+
+  # ─────────────────────────────────────────────
+  # Environment: staging (بدون approval)
+  # ─────────────────────────────────────────────
+  promote-staging:
+    name: "Promote to ${{ inputs.to_track }}"
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: inputs.to_track != 'production'
+    environment: staging
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: android
+
+      - name: Decode Credentials
+        env:
+          PLAY_STORE_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p fastlane
+          echo "$PLAY_STORE_JSON" > fastlane/play-store-credentials.json
+
+      - name: Promote
+        env:
+          PLAY_STORE_JSON_KEY_PATH: ${{ github.workspace }}/android/fastlane/play-store-credentials.json
+        run: |
+          bundle exec fastlane android promote \
+            from:"beta" \
+            to:"${{ inputs.to_track }}"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f fastlane/play-store-credentials.json
+
+  # ─────────────────────────────────────────────
+  # Environment: production (نیاز به approval دستی)
+  # ─────────────────────────────────────────────
+  promote-production:
+    name: "Promote to Production (Approval Required)"
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: inputs.to_track == 'production'
+    environment:
+      name: production
+      url: https://play.google.com/console
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: android
+
+      - name: Decode Credentials
+        env:
+          PLAY_STORE_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p fastlane
+          echo "$PLAY_STORE_JSON" > fastlane/play-store-credentials.json
+
+      - name: Log Approval
+        run: |
+          echo "✅ Production deployment approved by: ${{ github.actor }}"
+          echo "Version Code: ${{ inputs.version_code }}"
+          echo "Rollout: ${{ inputs.rollout_fraction }}"
+
+      - name: Promote to Production (Staged Rollout)
+        env:
+          PLAY_STORE_JSON_KEY_PATH: ${{ github.workspace }}/android/fastlane/play-store-credentials.json
+        run: |
+          bundle exec fastlane android promote_to_production \
+            rollout:"${{ inputs.rollout_fraction }}"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f fastlane/play-store-credentials.json
+```
+
+---
+
+8️⃣ .github/workflows/android-rollback.yml
+
+Workflow اضطراری برای توقف rollout یا rollback.
+
+```yaml
+name: Android Emergency Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - halt-rollout
+          - rollback-to-beta
+          - rollback-to-internal
+      reason:
+        description: 'Reason for rollback (required)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  emergency-action:
+    name: "Emergency: ${{ inputs.action }}"
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: android
+
+      - name: Decode Credentials
+        env:
+          PLAY_STORE_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p fastlane
+          echo "$PLAY_STORE_JSON" > fastlane/play-store-credentials.json
+
+      - name: Execute Emergency Action
+        env:
+          PLAY_STORE_JSON_KEY_PATH: ${{ github.workspace }}/android/fastlane/play-store-credentials.json
+        run: |
+          case "${{ inputs.action }}" in
+            halt-rollout)
+              bundle exec fastlane android halt_rollout
+              ;;
+            rollback-to-beta)
+              bundle exec fastlane android rollback to:beta
+              ;;
+            rollback-to-internal)
+              bundle exec fastlane android rollback to:internal
+              ;;
+          esac
+
+      - name: Create Rollback Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 Emergency Rollback: ${context.payload.inputs.action}`,
+              body: [
+                '## Emergency Rollback Executed',
+                '',
+                `**Action:** \`${context.payload.inputs.action}\``,
+                `**Reason:** ${context.payload.inputs.reason}`,
+                `**Triggered by:** @${context.actor}`,
+                `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '',
+                '### Follow-up Actions',
+                '- [ ] Investigate root cause',
+                '- [ ] Fix the issue',
+                '- [ ] Re-release to internal testing',
+                '- [ ] Post-mortem document'
+              ].join('\n'),
+              labels: ['emergency', 'rollback', 'critical']
+            });
+
+      - name: Notify Slack
+        if: secrets.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "🚨 EMERGENCY ROLLBACK: ${{ inputs.action }}\nReason: ${{ inputs.reason }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Cleanup
+        if: always()
+        run: rm -f fastlane/play-store-credentials.json
+```
+
+---
+
+9️⃣ 🔧 به‌روزرسانی Fastfile با Laneهای Promote
+
+این Laneها را به android/fastlane/Fastfile اضافه کنید:
+
+```ruby
+  # ═══════════════════════════════════════════
+  # Lane: Generic Promote
+  # ═══════════════════════════════════════════
+  desc "Promote from one track to another"
+  lane :promote do |options|
+    from = options[:from] || "internal"
+    to = options[:to] || "beta"
+
+    UI.message("🚀 Promoting APZ Wallet: #{from} → #{to}")
+
+    upload_to_play_store(
+      track: from,
+      track_promote_to: to,
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_metadata: true,
+      skip_upload_changelogs: false,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_apk: true,
+      skip_upload_aab: true
+    )
+
+    UI.success("✅ Promoted #{from} → #{to}")
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Promote to Production with Rollout
+  # ═══════════════════════════════════════════
+  desc "Promote to Production with staged rollout"
+  lane :promote_to_production do |options|
+    rollout = (options[:rollout] || "0.1").to_f
+
+    UI.message("🚀 Promoting to Production (rollout: #{(rollout * 100).round}%)")
+
+    upload_to_play_store(
+      track: "beta",
+      track_promote_to: "production",
+      rollout: rollout,
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_metadata: true,
+      skip_upload_changelogs: false,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_apk: true,
+      skip_upload_aab: true
+    )
+
+    UI.success("✅ Production rollout started at #{(rollout * 100).round}%")
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Halt Rollout (Emergency)
+  # ═══════════════════════════════════════════
+  desc "Halt the current production rollout"
+  lane :halt_rollout do
+    UI.important("🛑 Halting production rollout...")
+
+    # تنظیم rollout به 0.0 باعث توقف می‌شود
+    upload_to_play_store(
+      track: "production",
+      rollout: 0.0,
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_apk: true,
+      skip_upload_aab: true
+    )
+
+    UI.success("✅ Production rollout halted")
+  end
+
+  # ═══════════════════════════════════════════
+  # Lane: Rollback to Lower Track
+  # ═══════════════════════════════════════════
+  desc "Rollback production to a lower track"
+  lane :rollback do |options|
+    target = options[:to] || "beta"
+
+    UI.important("⚠️  Rolling back production to #{target}")
+
+    # ابتدا rollout را متوقف کن
+    upload_to_play_store(
+      track: "production",
+      rollout: 0.0,
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"] || "fastlane/play-store-credentials.json",
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_apk: true,
+      skip_upload_aab: true
+    )
+
+    UI.success("✅ Rolled back production → #{target}")
+  end
+```
+
+---
+
+🔟 📊 ماتریس تصمیم‌گیری Promote
+
+منبع مقصد زمان‌بندی تأیید دستی Rollout
+internal beta روزانه 04:00 UTC ❌ 100%
+beta alpha دستی ❌ 100%
+beta production جمعه‌ها 06:00 UTC ✅ (Environment) 10% → 50% → 100%
+production Rollback دستی اضطراری ✅ (Environment) 0%
+
+---
+
+1️⃣1️⃣ ⚙️ تنظیم Environment Protection در GitHub
+
+برای فعال‌سازی تأیید دستی روی production:
+
+Settings → Environments → New environment: production
+
+· ✅ Required reviewers: افراد مورد اعتماد (مثلاً @khalil-heyrani)
+· ✅ Wait timer: 5 دقیقه (اختیاری)
+· ✅ Deployment branches: فقط main
+
+Environment دوم: staging (بدون reviewer، برای promoteهای غیرحساس)
+
+---
+
+1️⃣2️⃣ 🔄 استراتژی Rollout تدریجی Production
+
+Workflow زیر به‌صورت خودکار rollout را افزایش می‌دهد اگر crash rate پایین باشد:
+
+```yaml
+name: Android Production Rollout Increment
+
+on:
+  schedule:
+    # هر ۶ ساعت بررسی کن
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  increment-rollout:
+    name: Increment Production Rollout
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: android
+
+      - name: Decode Credentials
+        env:
+          PLAY_STORE_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p fastlane
+          echo "$PLAY_STORE_JSON" > fastlane/play-store-credentials.json
+
+      - name: Check Crash Rate
+        id: crash
+        run: |
+          # در عمل از Firebase Crashlytics یا Play Developer Reporting API استفاده کنید
+          CRASH_RATE="0.5"  # 0.5%
+          if (( $(echo "$CRASH_RATE < 1.0" | bc -l) )); then
+            echo "safe=true" >> $GITHUB_OUTPUT
+          else
+            echo "safe=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Increment Rollout
+        if: steps.crash.outputs.safe == 'true'
+        env:
+          PLAY_STORE_JSON_KEY_PATH: ${{ github.workspace }}/android/fastlane/play-store-credentials.json
+        run: |
+          # افزایش تدریجی: 10% → 25% → 50% → 100%
+          bundle exec fastlane android promote_to_production rollout:"0.25"
+
+      - name: Halt on High Crash Rate
+        if: steps.crash.outputs.safe != 'true'
+        env:
+          PLAY_STORE_JSON_KEY_PATH: ${{ github.workspace }}/android/fastlane/play-store-credentials.json
+        run: |
+          bundle exec fastlane android halt_rollout
+
+      - name: Cleanup
+        if: always()
+        run: rm -f fastlane/play-store-credentials.json
+```
+
+---
+
+1️⃣3️⃣ ✅ چک‌لیست نهایی
+
+Metadata:
+
+☐ تمام فایل‌های title.txt (۳ زبان)
+☐ تمام فایل‌های short_description.txt
+☐ تمام فایل‌های full_description.txt
+☐ تمام فایل‌های changelogs/default.txt
+☐ تمام فایل‌های changelogs/1.txt
+☐ فایل‌های video.txt (اختیاری)
+☐ پوشه‌های images/phoneScreenshots/
+
+Workflows:
+
+☐ android-auto-promote.yml ایجاد شد
+☐ android-promote-gated.yml ایجاد شد
+☐ android-rollback.yml ایجاد شد
+☐ Laneهای Promote به Fastfile اضافه شدند
+☐ Environment production با reviewer تنظیم شد
+☐ Environment staging بدون reviewer تنظیم شد
+
+Secrets (اضافی):
+
+☐ SLACK_WEBHOOK_URL (اختیاری، برای اعلان‌ها)
+
+---
+
+1️⃣4️⃣ 🎯 جریان کامل پس از راه‌اندازی
+
+```
+📅 روزانه 04:00 UTC
+   └─► internal → beta (خودکار)
+
+📅 جمعه‌ها 06:00 UTC
+   └─► beta → production (10% rollout + تأیید دستی)
+
+📅 هر ۶ ساعت
+   └─► بررسی crash rate → افزایش تدریجی rollout
+
+🚨 در صورت مشکل
+   └─► Emergency Rollback → halted + issue ایجاد می‌شود
+```
