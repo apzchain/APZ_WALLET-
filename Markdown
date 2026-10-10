@@ -1,0 +1,156 @@
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!--                    APZ WALLET — README                      -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div align="center">
+
+<img src="assets/highres-icon.png" alt="APZ Wallet" width="140" height="140" />
+
+# APZ Wallet
+
+**Lightweight • Secure • Open-Source**
+
+Official Wallet for APZ Chain
+
+*Built by [Khalil Heyrani](https://github.com/apzchain)*
+
+[![Build APK](https://github.com/apzchain/APZ_WALLET/actions/workflows/build-apk.yml/badge.svg)](https://github.com/apzchain/APZ_WALLET/actions/workflows/build-apk.yml)
+[![Publish to Play Store](https://github.com/apzchain/APZ_WALLET/actions/workflows/publish-play-store.yml/badge.svg)](https://github.com/apzchain/APZ_WALLET/actions/workflows/publish-play-store.yml)
+[![Deploy GitHub Pages](https://github.com/apzchain/APZ_WALLET/actions/workflows/pages-deploy.yml/badge.svg)](https://github.com/apzchain/APZ_WALLET/actions/workflows/pages-deploy.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-00ffcc.svg?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Web%20%7C%20PWA-00b8ff.svg?style=flat-square)](#-platforms)
+[![Languages](https://img.shields.io/badge/i18n-FA%20%7C%20EN%20%7C%20DE-a855f7.svg?style=flat-square)](#-languages)
+
+[Features](#-features) •
+[Quick Start](#-quick-start) •
+[Build](#-building) •
+[Architecture](#-architecture) •
+[Security](#-security) •
+[Contributing](#-contributing)
+
+</div>
+
+---
+
+## 📖 Overview
+
+**APZ Wallet** is the official, non-custodial wallet for **APZ Chain** — a transparent, secure, and independent blockchain platform. Built with a security-first mindset and a modular architecture, APZ Wallet gives you complete control over your private keys and assets.
+
+> 🔐 **Your keys. Your coins. No servers. No tracking. No compromises.**
+
+### Why APZ Wallet?
+
+- 🛡️ **Non-Custodial** — Private keys never leave your device
+- 🎨 **Neon UI** — A stunning, modern interface built for the future
+- 🧩 **Modular** — Built with Kotlin, TypeScript, Rust, and Go
+- 🌍 **Multi-Language** — Persian, English, and German out of the box
+- 🔍 **Built-in Explorer** — Search transactions, addresses, and contracts
+- 📱 **PWA + Native APK** — Installable on any device
+- 🚀 **Fully Automated** — CI/CD with GitHub Actions + Fastlane
+
+---
+
+## ✨ Features
+
+### 🔐 Security & Privacy
+
+- **Local Key Generation** — Generate and store keys entirely on-device
+- **Local Transaction Signing** — Every transaction signed locally with Rust crypto engine
+- **AES-256 Encryption** — Encrypted local storage for sensitive data
+- **No Central Server** — Zero server dependency for key storage
+- **No Analytics / No Trackers** — Complete privacy by design
+- **Open Source** — Fully auditable codebase
+
+### 💎 Wallet Core
+
+- **Multi-Network RPC** — Support for APZ Chain mainnet, testnet, and custom endpoints
+- **HD Wallet Support** — BIP-39/BIP-44 compliant seed phrase management
+- **Multi-Account** — Manage multiple addresses within a single wallet
+- **QR Code Support** — Scan and generate QR codes for addresses
+- **Transaction History** — View detailed history with pagination
+- **Contact Book** — Save frequently-used addresses
+- **Encrypted Backup** — Export and import encrypted backups
+
+### 🔍 APZ Chain Explorer
+
+- **Advanced Search** — Search by transaction hash, address, or block number
+- **Smart Contract Viewer** — Full ABI display with callable read functions
+- **Source Code Viewer** — Verified contract source with syntax highlighting
+- **NatSpec Documentation Generator** — Auto-generated docs from Solidity comments
+- **Standard Detection** — Auto-detect ERC-20, ERC-721, ERC-1155, ERC-4626, and more
+- **Proxy Detection** — EIP-1967, EIP-1822 proxy pattern recognition
+- **Multi-File Support** — Browse all source files with tab navigation
+
+### 🌐 Progressive Web App (PWA)
+
+- **Installable** — Add to home screen on Android, iOS, and Desktop
+- **Offline Support** — Service Worker caching with smart strategies
+- **Background Sync** — Periodic release checks and cache updates
+- **Share Target** — Receive shared links and content from other apps
+- **Push Notifications** — Get notified about new releases
+- **Standalone Mode** — Native-like experience without app stores
+
+### 📱 Platform Support
+
+| Platform | Status | Distribution |
+|----------|--------|--------------|
+| 🤖 **Android** | ✅ Stable | GitHub Releases + Play Store |
+| 🌐 **Web** | ✅ Stable | GitHub Pages |
+| 💻 **Desktop (PWA)** | ✅ Stable | Chrome / Edge install |
+| 🍎 **iOS (PWA)** | ✅ Stable | Safari "Add to Home Screen" |
+| 🖥️ **Linux / macOS / Windows** | 🔜 Planned | Electron build |
+
+### 🌍 Languages
+
+- 🇮🇷 **Persian (فارسی)** — Default language with full RTL support
+- 🇬🇧 **English** — Primary international language
+- 🇩🇪 **German (Deutsch)** — European expansion
+
+---
+
+## 🚀 Quick Start
+
+### 📱 For Users
+
+**Android:**
+1. Download the latest APK from [Releases](https://github.com/apzchain/APZ_WALLET/releases)
+2. Verify the SHA-256 checksum (provided in each release)
+3. Enable "Install from unknown sources" if needed
+4. Install and launch the app
+
+**Web:**
+1. Visit [apzchain.github.io/APZ_WALLET](https://apzchain.github.io/APZ_WALLET/)
+2. Click "Install" in your browser (or "Add to Home Screen" on mobile)
+3. Use it like a native app
+
+### 🛠️ For Developers
+
+**Prerequisites:**
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Node.js | 20+ | JavaScript runtime |
+| JDK | 17 | Android builds |
+| Android Studio | Latest | Android SDK & Emulator |
+| Rust | 1.75+ | Crypto engine |
+| Go | 1.22+ | Network layer |
+| Ruby | 3.2+ | Fastlane deployment |
+
+**Clone and Setup:**
+
+```bash
+# Clone repository
+git clone https://github.com/apzchain/APZ_WALLET.git
+cd APZ_WALLET
+
+# Install Node dependencies
+npm install
+
+# Install Rust dependencies
+cd crypto && cargo build --release && cd ..
+
+# Install Go dependencies
+cd network && go mod download && cd ..
+
+# Install Ruby dependencies (for Fastlane)
+cd android && bundle install && cd ..
