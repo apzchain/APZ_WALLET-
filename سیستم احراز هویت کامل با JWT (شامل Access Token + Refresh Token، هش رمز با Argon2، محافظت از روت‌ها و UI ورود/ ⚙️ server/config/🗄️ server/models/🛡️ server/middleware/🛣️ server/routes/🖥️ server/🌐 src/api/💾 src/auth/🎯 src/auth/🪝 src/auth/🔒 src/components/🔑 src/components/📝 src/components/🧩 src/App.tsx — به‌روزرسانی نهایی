@@ -1,0 +1,43 @@
+```tsx
+import React from 'react';
+import { AuthProvider } from './auth/AuthContext';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import { WalletDashboard } from './components/WalletDashboard';
+import './styles/globals.css';
+
+function App() {
+  return (
+    <AuthProvider>
+      <ProtectedRoute>
+        <WalletDashboard />
+      </ProtectedRoute>
+    </AuthProvider>
+  );
+}
+
+export default App;
+```
+و WalletDashboard.tsx رو از کد قبلی App.tsx جدا کن (بدون تغییر در منطق کیف پول) — فقط یه دکمهٔ خروج هم اضافه کن:
+
+```tsx
+import { useAuth } from '../auth/useAuth';
+
+export const WalletDashboard: React.FC = () => {
+  const { user, logout, logoutAll } = useAuth();
+  // ... تمام منطق قبلی کیف پول
+  
+  return (
+    <div className="app-container">
+      <header className="app-header">
+        <h1>⛓️ APZ Wallet</h1>
+        <div className="user-bar">
+          <span>👤 {user?.display_name || user?.email}</span>
+          <button onClick={logout} className="btn-secondary">خروج</button>
+          <button onClick={logoutAll} className="btn-danger">خروج از همه دستگاه‌ها</button>
+        </div>
+      </header>
+      {/* ... بقیهٔ UI کیف پول */}
+    </div>
+  );
+};
+```
