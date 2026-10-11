@@ -1,0 +1,2883 @@
+🗂️ ساختار اضافهشده
+
+```text
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   ├── federated.config.ts              ← جدید
+│   │   └── rl.config.ts                     ← جدید
+│   ├── fl/
+│   │   ├── fedAvg.ts                        ← الگوریتم FedAvg
+│   │   ├── differentialPrivacy.ts           ← DP (noise + clipping)
+│   │   └── secureAggregation.ts             ← Shamir secret sharing
+│   ├── rl/
+│   │   ├── qLearning.ts                     ← Q-Learning tabular
+│   │   ├── contextualBandit.ts              ← LinUCB bandit
+│   │   └── rewardTracker.ts                 ← ثبت پاداش
+│   ├── services/
+│   │   ├── federatedLearning.service.ts     ← سرور FL
+│   │   ├── rlPolicy.service.ts              ← RL PDP
+│   │   └── flRound.service.ts               ← مدیریت round ها
+│   ├── middleware/
+│   │   └── rlPolicy.middleware.ts           ← جایگزین PDP
+│   └── routes/
+│       ├── federated.routes.ts              ← admin + client
+│       └── rl.routes.ts                     ← admin
+└── src/
+    ├── fl/
+    │   ├── localTrainer.ts                  ← آموزش در مرورگر
+    │   └── useFederatedClient.ts            ← hook اتوماتیک
+    └── components/
+        └── admin/
+            ├── FederatedPanel.tsx
+            └── RlPolicyPanel.tsx
+```
+
+---
+
+📦 نصب پکیجها
+
+```bash
+# سرور: TF.js موجود + ابزار اضافی
+npm install seedrandom simple-statistics
+
+# کلاینت: TF.js برای مرورگر
+npm install @tensorflow/tfjs
+```
+
+---
+
+⚙️ .env.example — اضافه کن
+
+```env
+# ───── Federated Learning ─────
+FL_ENABLED=true
+# حداقل کلاینت برای شروع یک round
+FL_MIN_CLIENTS=5
+# حداکثر کلاینت در هر round
+FL_MAX_CLIENTS=50
+# حداقل داده محلی برای شرکت
+FL_MIN_LOCAL_SAMPLES=20
+# نسبت کلاینتهای انتخابشده
+FL_CLIENT_FRACTION=0.2
+# الگوریتم تجمیع: 'fedavg' | 'fedprox' | 'median'
+FL_AGGREGATION=fedavg
+# ─── Differential Privacy ───
+FL_DP_ENABLED=true
+FL_DP_CLIP_NORM=1.0
+FL_DP_NOISE_MULTIPLIER=0.1
+FL_DP_DELTA=1e-5
+FL_DP_EPSILON=1.0
+# ─── Secure Aggregation ───
+FL_SECURE_AGG=true
+FL_SA_THRESHOLD=3
+
+# ───── Reinforcement Learning ─────
+RL_ENABLED=true
+# الگوریتم: 'qlearning' | 'linucb' | 'thompson'
+RL_ALGORITHM=linucb
+RL_LEARNING_RATE=0.1
+RL_DISCOUNT_FACTOR=0.95
+RL_EPSILON=0.1
+RL_EXPLORATION_DECAY=0.999
+# حالت shadow: فقط یاد بگیر، اعمال نکن
+RL_SHADOW_MODE=true
+# حداقل رویداد قبل از اعمال سیاستها
+RL_MIN_EVENTS=1000
+# بُعد feature context
+RL_CONTEXT_DIM=12
+# پاداشها (reward)
+RL_REWARD_LEGIT_ALLOW=+1
+RL_REWARD_ATTACK_BLOCK=+2
+RL_REWARD_LEGIT_BLOCK=-3
+RL_REWARD_FALSE_CHALLENGE=-0.5
+RL_REWARD_ATTACK_ALLOW=-5
+```
+
+---
+
+⚙️ server/config/federated.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const FL_CONFIG = {
+  enabled: process.env.FL_ENABLED === 'true',
+  minClients: Number(process.env.FL_MIN_CLIENTS || 5),
+  maxClients: Number(process.env.FL_MAX_CLIENTS || 50),
+  minLocalSamples: Number(process.env.FL_MIN_LOCAL_SAMPLES || 20),
+  clientFraction: Number(process.env.FL_CLIENT_FRACTION || 0.2),
+  aggregation: (process.env.FL_AGGREGATION || 'fedavg') as 'fedavg' | 'fedprox' | 'median',
+
+  dp: {
+    enabled: process.env.FL_DP_ENABLED === 'true',
+    clipNorm: Number(process.env.FL_DP_CLIP_NORM || 1.0),
+    noiseMultiplier: Number(process.env.FL_DP_NOISE_MULTIPLIER || 0.1),
+    delta: Number(process.env.FL_DP_DELTA || 1e-5),
+    epsilon: Number(process.env.FL_DP_EPSILON || 1.0)
+  },
+
+  secureAgg: {
+    enabled: process.env.FL_SECURE_AGG === 'true',
+    threshold: Number(process.env.FL_SA_THRESHOLD || 3)
+  },
+
+  // ───── مدل محلی ─────
+  // هر کلاینت روی همون معماری مدل قبلی (autoencoder) آموزش میده
+  localModel: {
+    inputDim: 20,
+    hiddenDim: 16,
+    latentDim: 8,
+    localEpochs: 3,
+    localBatchSize: 16,
+    learningRate: 0.01
+  },
+
+  roundTimeoutMs: 5 * 60 * 1000, // 5 دقیقه
+  maxRoundHistory: 100
+} as const;
+```
+
+---
+
+⚙️ server/config/rl.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const RL_CONFIG = {
+  enabled: process.env.RL_ENABLED === 'true',
+  algorithm: (process.env.RL_ALGORITHM || 'linucb') as 'qlearning' | 'linucb' | 'thompson',
+  learningRate: Number(process.env.RL_LEARNING_RATE || 0.1),
+  discountFactor: Number(process.env.RL_DISCOUNT_FACTOR || 0.95),
+  epsilon: Number(process.env.RL_EPSILON || 0.1),
+  epsilonDecay: Number(process.env.RL_EXPLORATION_DECAY || 0.999),
+  shadowMode: process.env.RL_SHADOW_MODE !== 'false',
+  minEventsBeforeActive: Number(process.env.RL_MIN_EVENTS || 1000),
+  contextDim: Number(process.env.RL_CONTEXT_DIM || 12),
+
+  // ───── Actions ─────
+  actions: ['allow', 'challenge', 'step_up', 'block'] as const,
+
+  // ───── Reward Table ─────
+  rewards: {
+    legitAllow: Number(process.env.RL_REWARD_LEGIT_ALLOW || 1),
+    attackBlock: Number(process.env.RL_REWARD_ATTACK_BLOCK || 2),
+    legitBlock: Number(process.env.RL_REWARD_LEGIT_BLOCK || -3),
+    falseChallenge: Number(process.env.RL_REWARD_FALSE_CHALLENGE || -0.5),
+    attackAllow: Number(process.env.RL_REWARD_ATTACK_ALLOW || -5),
+    stepUpSuccess: 0.5,
+    stepUpAbandon: -1
+  },
+
+  // ───── Context Vector Order (12 بُعد) ─────
+  contextOrder: [
+    'trustScore',        // 0-1 (نرمالیزه)
+    'vpnRisk',           // 0-1
+    'botRisk',           // 0-1
+    'threatRisk',        // 0-1
+    'mlAnomalyScore',    // 0-1
+    'sessionAgeHours',   // 0-1
+    'isNewDevice',       // 0 | 1
+    'rolePrivilege',     // 0 | 1 (admin = 1)
+    'pathSensitivity',   // 0-1
+    'hourOfDayNorm',     // 0-1
+    'recentFailures',    // 0-1
+    'geoRisk'            // 0-1
+  ] as const,
+
+  // ───── Reward Delay ─────
+  // پاداش نهایی بعد از این مدت مشخص میشه
+  rewardDelayMs: 60 * 1000,
+
+  // ───── Training ─────
+  batchSize: 32,
+  minSamplesPerAction: 20
+} as const;
+
+export type RlAction = typeof RL_CONFIG.actions[number];
+export type ContextFeature = typeof RL_CONFIG.contextOrder[number];
+```
+
+---
+
+🗄️ بهروزرسانی server/services/db.service.ts
+
+```typescript
+db.exec(`
+  -- ═══════════════════════════════════════════
+  --  FEDERATED LEARNING
+  -- ═══════════════════════════════════════════
+  CREATE TABLE IF NOT EXISTS fl_clients (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    device_fingerprint TEXT UNIQUE,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    total_rounds INTEGER NOT NULL DEFAULT 0,
+    total_samples INTEGER NOT NULL DEFAULT 0,
+    avg_contribution REAL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    opted_in_at INTEGER NOT NULL,
+    opted_out_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_fl_clients_user ON fl_clients(user_id);
+  CREATE INDEX IF NOT EXISTS idx_fl_clients_active ON fl_clients(is_active, last_seen_at);
+
+  CREATE TABLE IF NOT EXISTS fl_rounds (
+    id TEXT PRIMARY KEY,
+    round_number INTEGER NOT NULL,
+    status TEXT NOT NULL,                    -- 'collecting' | 'aggregating' | 'completed' | 'failed' | 'aborted'
+    target_clients INTEGER NOT NULL,
+    joined_clients INTEGER NOT NULL DEFAULT 0,
+    aggregation_algorithm TEXT NOT NULL,
+    global_model_version INTEGER,            -- نسخه قبل
+    new_model_version INTEGER,               -- نسخه بعد
+    started_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    duration_ms INTEGER,
+    privacy_budget_used REAL,                -- ε مصرف‌شده
+    error TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_fl_rounds_status ON fl_rounds(status, started_at);
+  CREATE INDEX IF NOT EXISTS idx_fl_rounds_number ON fl_rounds(round_number);
+
+  -- ───── Local Updates (که کلاینت آپلود میکنه) ─────
+  CREATE TABLE IF NOT EXISTS fl_client_updates (
+    id TEXT PRIMARY KEY,
+    round_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    samples_count INTEGER NOT NULL,
+    weights_blob TEXT NOT NULL,              -- JSON (base64 یا array)
+    weights_hash TEXT NOT NULL,              -- برای deduplication
+    loss REAL,
+    local_epochs INTEGER,
+    noise_added INTEGER DEFAULT 0,
+    received_at INTEGER NOT NULL,
+    FOREIGN KEY (round_id) REFERENCES fl_rounds(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES fl_clients(id) ON DELETE CASCADE,
+    UNIQUE(round_id, client_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_fl_updates_round ON fl_client_updates(round_id);
+
+  -- ───── Global Model History ─────
+  CREATE TABLE IF NOT EXISTS fl_global_models (
+    version INTEGER PRIMARY KEY AUTOINCREMENT,
+    round_id TEXT,
+    weights_blob TEXT NOT NULL,
+    total_samples INTEGER NOT NULL,
+    participants INTEGER NOT NULL,
+    loss REAL,
+    created_at INTEGER NOT NULL
+  );
+
+  -- ═══════════════════════════════════════════
+  --  REINFORCEMENT LEARNING
+  -- ═══════════════════════════════════════════
+  CREATE TABLE IF NOT EXISTS rl_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    session_id TEXT,
+    ip_address TEXT,
+    path TEXT,
+    context_vector TEXT NOT NULL,            -- JSON (12 features)
+    context_hash TEXT NOT NULL,
+    // ───── Action Selection ─────
+    action TEXT NOT NULL,                    -- 'allow' | 'challenge' | 'step_up' | 'block'
+    policy_action TEXT NOT NULL,             -- آنچه RL پیشنهاد کرد
+    executed_action TEXT NOT NULL,           -- آنچه واقعاً اجرا شد
+    exploration INTEGER DEFAULT 0,           -- آیا exploratory بود؟
+    q_values TEXT,                           -- JSON: Q-value هر action
+    confidence REAL,
+    // ───── Reward ─────
+    reward REAL,
+    reward_source TEXT,                      -- 'user_success' | 'attack_blocked' | 'manual'
+    reward_at INTEGER,
+    // ───── Metadata ─────
+    model_version INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_rl_events_user ON rl_events(user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_rl_events_action ON rl_events(action, created_at);
+  CREATE INDEX IF NOT EXISTS idx_rl_events_reward ON rl_events(reward_at);
+  CREATE INDEX IF NOT EXISTS idx_rl_events_context ON rl_events(context_hash);
+
+  -- ───── Q-Table (برای tabular Q-learning) ─────
+  CREATE TABLE IF NOT EXISTS rl_q_table (
+    state_hash TEXT NOT NULL,
+    action TEXT NOT NULL,
+    q_value REAL NOT NULL,
+    visits INTEGER NOT NULL DEFAULT 1,
+    last_updated_at INTEGER NOT NULL,
+    PRIMARY KEY (state_hash, action)
+  );
+  CREATE INDEX IF NOT EXISTS idx_rl_q_value ON rl_q_table(q_value DESC);
+
+  -- ───── LinUCB: A matrix + b vector per action ─────
+  CREATE TABLE IF NOT EXISTS rl_linucb (
+    action TEXT PRIMARY KEY,
+    a_matrix TEXT NOT NULL,                  -- JSON (d×d)
+    b_vector TEXT NOT NULL,                  -- JSON (d)
+    pulls INTEGER NOT NULL DEFAULT 0,
+    total_reward REAL NOT NULL DEFAULT 0,
+    last_updated_at INTEGER NOT NULL
+  );
+
+  -- ───── Policy Snapshots ─────
+  CREATE TABLE IF NOT EXISTS rl_policy_snapshots (
+    id TEXT PRIMARY KEY,
+    model_version INTEGER NOT NULL,
+    algorithm TEXT NOT NULL,
+    policy_data TEXT NOT NULL,               -- JSON (Q-table یا LinUCB params)
+    events_seen INTEGER NOT NULL,
+    avg_reward REAL NOT NULL,
+    shadow_mode INTEGER NOT NULL DEFAULT 1,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_rl_snapshots_active ON rl_policy_snapshots(is_active, created_at);
+`);
+```
+
+---
+
+🧠 server/fl/fedAvg.ts — الگوریتم FedAvg
+
+```typescript
+import { FL_CONFIG } from '../config/federated.config.js';
+
+export interface ClientUpdate {
+  clientId: string;
+  samples: number;
+  weights: number[][];   // layers × values
+}
+
+/**
+ * Federated Averaging (McMahan et al., 2017)
+ * 
+ * W_global = Σ (n_k / n_total) × W_k
+ * 
+ */
+export function federatedAveraging(updates: ClientUpdate[]): number[][] {
+  if (updates.length === 0) throw new Error('No updates to aggregate');
+
+  const totalSamples = updates.reduce((sum, u) => sum + u.samples, 0);
+  if (totalSamples === 0) throw new Error('Total samples is 0');
+
+  const numLayers = updates[0].weights.length;
+  const aggregated: number[][] = [];
+
+  for (let layerIdx = 0; layerIdx < numLayers; layerIdx++) {
+    const layerSize = updates[0].weights[layerIdx].length;
+    const layerWeights = new Array(layerSize).fill(0);
+
+    for (const update of updates) {
+      const weight = update.samples / totalSamples;
+      const layer = update.weights[layerIdx];
+
+      for (let i = 0; i < layerSize; i++) {
+        layerWeights[i] += layer[i] * weight;
+      }
+    }
+
+    aggregated.push(layerWeights);
+  }
+
+  return aggregated;
+}
+
+/**
+ * FedProx — مقاوم به ناهمگونی داده
+ * نسخه ساده: با proximal term که در آموزش محلی اعمال میشه
+ * اینجا فقط aggregation رو یکم متفاوت میکنیم
+ */
+export function fedProxAggregate(updates: ClientUpdate[]): number[][] {
+  // در پیادهسازی ساده، همون FedAvg
+  // تفاوت اصلی در local training هست (proximal term اضافه میشه)
+  return federatedAveraging(updates);
+}
+
+/**
+ * Coordinate-wise Median — مقاوم به Byzantine attacks
+ * 
+ */
+export function medianAggregate(updates: ClientUpdate[]): number[][] {
+  const numLayers = updates[0].weights.length;
+  const result: number[][] = [];
+
+  for (let layerIdx = 0; layerIdx < numLayers; layerIdx++) {
+    const layerSize = updates[0].weights[layerIdx].length;
+    const layerMedian: number[] = [];
+
+    for (let i = 0; i < layerSize; i++) {
+      const values = updates.map(u => u.weights[layerIdx][i]);
+      values.sort((a, b) => a - b);
+
+      const mid = Math.floor(values.length / 2);
+      const median = values.length % 2 === 0
+        ? (values[mid - 1] + values[mid]) / 2
+        : values[mid];
+
+      layerMedian.push(median);
+    }
+
+    result.push(layerMedian);
+  }
+
+  return result;
+}
+
+export function aggregate(updates: ClientUpdate[], algorithm: string): number[][] {
+  switch (algorithm) {
+    case 'median': return medianAggregate(updates);
+    case 'fedprox': return fedProxAggregate(updates);
+    case 'fedavg':
+    default: return federatedAveraging(updates);
+  }
+}
+```
+
+---
+
+🔐 server/fl/differentialPrivacy.ts — Differential Privacy
+
+```typescript
+import crypto from 'crypto';
+import { FL_CONFIG } from '../config/federated.config.js';
+
+/**
+ * Clip کردن گرادیان/وزن به norm مشخص
+ * این جلوی تأثیر زیاد یک کلاینت رو میگیره
+ */
+export function clipWeights(weights: number[][], clipNorm: number): number[][] {
+  // محاسبه L2 norm کل
+  let totalNorm = 0;
+  for (const layer of weights) {
+    for (const w of layer) {
+      totalNorm += w * w;
+    }
+  }
+  totalNorm = Math.sqrt(totalNorm);
+
+  if (totalNorm <= clipNorm) return weights;
+
+  const scale = clipNorm / totalNorm;
+  return weights.map(layer => layer.map(w => w * scale));
+}
+
+/**
+ * اضافه کردن نویز گاوسی (Gaussian Mechanism)
+ * noise ~ N(0, σ²) که σ = noiseMultiplier × clipNorm
+ */
+export function addGaussianNoise(
+  weights: number[][],
+  clipNorm: number,
+  noiseMultiplier: number
+): number[][] {
+  const sigma = noiseMultiplier * clipNorm;
+
+  return weights.map(layer =>
+    layer.map(w => {
+      const noise = gaussianRandom(0, sigma);
+      return w + noise;
+    })
+  );
+}
+
+/**
+ * Box-Muller transform برای نویز گاوسی
+ * (چون crypto.randomBytes یکنواخت میده)
+ */
+function gaussianRandom(mean: number, std: number): number {
+  const buf = crypto.randomBytes(16);
+  const u1 = buf.readUInt32BE(0) / 0xFFFFFFFF;
+  const u2 = buf.readUInt32BE(4) / 0xFFFFFFFF;
+
+  const z = Math.sqrt(-2 * Math.log(u1 || 1e-10)) * Math.cos(2 * Math.PI * u2);
+  return mean + z * std;
+}
+
+/**
+ * محاسبه epsilon مصرفشده با moment accountant (تقریبی)
+ * برای DP-SGD ساده، epsilon تقریبی حساب میشه
+ */
+export function computeEpsilon(
+  steps: number,
+  sampleRate: number,
+  noiseMultiplier: number,
+  delta: number
+): number {
+  // فرمول ساده از Abadi et al. 2016
+  const q = sampleRate;
+  const sigma = noiseMultiplier;
+
+  // ε ≈ q × sqrt(2 × steps × ln(1/δ)) / σ
+  const epsilon = (q * Math.sqrt(2 * steps * Math.log(1 / delta))) / sigma;
+  return epsilon;
+}
+
+/**
+ * اعمال کامل DP (clip + noise)
+ */
+export function applyDp(weights: number[][]): {
+  weights: number[][];
+  noiseApplied: boolean;
+} {
+  if (!FL_CONFIG.dp.enabled) {
+    return { weights, noiseApplied: false };
+  }
+
+  const clipped = clipWeights(weights, FL_CONFIG.dp.clipNorm);
+  const noisy = addGaussianNoise(clipped, FL_CONFIG.dp.clipNorm, FL_CONFIG.dp.noiseMultiplier);
+
+  return { weights: noisy, noiseApplied: true };
+}
+```
+
+---
+
+🔒 server/fl/secureAggregation.ts — Secure Aggregation (Shamir)
+
+```typescript
+import crypto from 'crypto';
+import { FL_CONFIG } from '../config/federated.config.js';
+
+/**
+ * Shamir Secret Sharing برای Secure Aggregation
+ * 
+ * ایده: هر کلاینت مقدار خودش رو به n سهم تقسیم میکنه
+ * و هر سهم رو با کلید عمومی سرور رمزنگاری میکنه.
+ * سرور فقط وقتی میتونه بازسازی کنه که حداقل t سهم رو داشته باشه.
+ */
+
+// ───── Modular arithmetic بر روی عدد اول بزرگ ─────
+const PRIME = BigInt('170141183460469231731687303715884105727'); // 2^127 - 1
+
+function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
+  let result = 1n;
+  base = base % mod;
+  while (exp > 0n) {
+    if (exp % 2n === 1n) result = (result * base) % mod;
+    exp = exp / 2n;
+    base = (base * base) % mod;
+  }
+  return result;
+}
+
+function modInverse(a: bigint, m: bigint): bigint {
+  return modPow(a, m - 2n, m); // Fermat's little theorem (m prime)
+}
+
+/**
+ * تقسیم یک secret به n سهم با آستانه t
+ */
+export function splitSecret(
+  secret: number,
+  numShares: number,
+  threshold: number
+): { x: number; y: string }[] {
+  // تبدیل secret به bigint (مثبت)
+  const secretBig = BigInt(Math.round(secret * 1e8)); // precision
+
+  // ساخت چندجملهای درجه t-1
+  const coefficients: bigint[] = [secretBig];
+  for (let i = 1; i < threshold; i++) {
+    const buf = crypto.randomBytes(16);
+    coefficients.push(BigInt('0x' + buf.toString('hex')) % PRIME);
+  }
+
+  const shares: { x: number; y: string }[] = [];
+  for (let x = 1; x <= numShares; x++) {
+    let y = 0n;
+    const xBig = BigInt(x);
+
+    for (let i = coefficients.length - 1; i >= 0; i--) {
+      y = (y * xBig + coefficients[i]) % PRIME;
+    }
+
+    shares.push({ x, y: y.toString() });
+  }
+
+  return shares;
+}
+
+/**
+ * بازسازی secret از t سهم
+ */
+export function reconstructSecret(shares: { x: number; y: string }[]): number {
+  let secret = 0n;
+
+  for (let i = 0; i < shares.length; i++) {
+    const { x: xi, y: yi } = shares[i];
+    const yiBig = BigInt(yi);
+
+    let num = 1n;
+    let den = 1n;
+
+    for (let j = 0; j < shares.length; j++) {
+      if (i === j) continue;
+      const xj = BigInt(shares[j].x);
+      num = (num * (-xj)) % PRIME;
+      den = (den * (BigInt(xi) - xj)) % PRIME;
+    }
+
+    const lagrange = (num * modInverse((den + PRIME) % PRIME, PRIME)) % PRIME;
+    secret = (secret + yiBig * lagrange) % PRIME;
+  }
+
+  // تبدیل به float
+  return Number(secret) / 1e8;
+}
+
+/**
+ * رمزنگاری یک سهم با کلید سرور
+ */
+export function encryptShare(share: string, serverPublicKey: string): string {
+  // پیادهسازی ساده: AES-256-GCM با کلید مشتقشده از public key
+  // (در production از libsodium یا tweetnacl استفاده کن)
+  const key = crypto.createHash('sha256').update(serverPublicKey).digest();
+  const iv = crypto.randomBytes(12);
+
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(share, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return `${iv.toString('hex')}:${tag.toString('hex')}:${enc.toString('hex')}`;
+}
+
+/**
+ * رمزگشایی سهم
+ */
+export function decryptShare(encrypted: string, serverPrivateKey: string): string {
+  const [ivHex, tagHex, encHex] = encrypted.split(':');
+  const key = crypto.createHash('sha256').update(serverPrivateKey).digest();
+
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    key,
+    Buffer.from(ivHex, 'hex')
+  );
+  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+
+  const dec = Buffer.concat([
+    decipher.update(Buffer.from(encHex, 'hex')),
+    decipher.final()
+  ]);
+
+  return dec.toString('utf8');
+}
+```
+
+---
+
+🎯 server/rl/qLearning.ts — Q-Learning
+
+```typescript
+import crypto from 'crypto';
+import db from '../services/db.service.js';
+import { RL_CONFIG, RlAction } from '../config/rl.config.js';
+
+/**
+ * Tabular Q-Learning با discretization بُعد بالا
+ * State = hash شده از context vector (bucketized)
+ */
+
+function discretizeContext(context: number[]): string {
+  // هر feature به 5 bucket تقسیم میشه
+  const buckets = context.map(v => Math.min(4, Math.floor(v * 5)));
+  return crypto.createHash('md5').update(buckets.join(',')).digest('hex').slice(0, 16);
+}
+
+export class QLearning {
+  /**
+   * انتخاب action با epsilon-greedy
+   */
+  selectAction(context: number[]): { action: RlAction; qValues: Record<string, number>; isExploration: boolean } {
+    const stateHash = discretizeContext(context);
+    const qValues = this.getQValues(stateHash);
+
+    // epsilon-greedy
+    const isExploration = Math.random() < RL_CONFIG.epsilon;
+
+    if (isExploration) {
+      const randomAction = RL_CONFIG.actions[
+        Math.floor(Math.random() * RL_CONFIG.actions.length)
+      ];
+      return { action: randomAction, qValues, isExploration: true };
+    }
+
+    // انتخاب بهترین
+    let bestAction: RlAction = 'allow';
+    let bestQ = -Infinity;
+
+    for (const action of RL_CONFIG.actions) {
+      const q = qValues[action] ?? 0;
+      if (q > bestQ) {
+        bestQ = q;
+        bestAction = action;
+      }
+    }
+
+    return { action: bestAction, qValues, isExploration: false };
+  }
+
+  /**
+   * بهروزرسانی Q-value با Bellman equation
+   * 
+   * Q(s,a) ← Q(s,a) + α × (r + γ × max_a' Q(s',a') - Q(s,a))
+   */
+  update(
+    stateHash: string,
+    action: RlAction,
+    reward: number,
+    nextStateHash: string
+  ) {
+    const currentRow = db.prepare(
+      'SELECT q_value, visits FROM rl_q_table WHERE state_hash = ? AND action = ?'
+    ).get(stateHash, action) as { q_value: number; visits: number } | undefined;
+
+    const currentQ = currentRow?.q_value ?? 0;
+
+    // max_a' Q(s',a')
+    const nextMaxRow = db.prepare(
+      'SELECT MAX(q_value) as max_q FROM rl_q_table WHERE state_hash = ?'
+    ).get(nextStateHash) as { max_q: number | null };
+
+    const maxNextQ = nextMaxRow?.max_q ?? 0;
+
+    // Bellman
+    const newQ = currentQ + RL_CONFIG.learningRate * (
+      reward + RL_CONFIG.discountFactor * maxNextQ - currentQ
+    );
+
+    // upsert
+    db.prepare(`
+      INSERT INTO rl_q_table (state_hash, action, q_value, visits, last_updated_at)
+      VALUES (?, ?, ?, 1, ?)
+      ON CONFLICT(state_hash, action) DO UPDATE SET
+        q_value = ?,
+        visits = visits + 1,
+        last_updated_at = ?
+    `).run(
+      stateHash, action, newQ, Date.now(),
+      newQ, Date.now()
+    );
+  }
+
+  private getQValues(stateHash: string): Record<string, number> {
+    const rows = db.prepare(
+      'SELECT action, q_value FROM rl_q_table WHERE state_hash = ?'
+    ).all(stateHash) as { action: string; q_value: number }[];
+
+    const qValues: Record<string, number> = {};
+    for (const action of RL_CONFIG.actions) qValues[action] = 0;
+
+    for (const row of rows) qValues[row.action] = row.q_value;
+
+    return qValues;
+  }
+
+  getStats() {
+    const total = db.prepare('SELECT COUNT(*) as c FROM rl_q_table')
+      .get() as { c: number };
+    const avgQ = db.prepare('SELECT AVG(q_value) as avg FROM rl_q_table')
+      .get() as { avg: number | null };
+
+    return {
+      statesLearned: total.c,
+      avgQValue: avgQ.avg || 0
+    };
+  }
+}
+
+export const qLearning = new QLearning();
+```
+
+---
+
+🎰 server/rl/contextualBandit.ts — LinUCB
+
+```typescript
+import db from '../services/db.service.js';
+import { RL_CONFIG, RlAction } from '../config/rl.config.js';
+
+/**
+ * LinUCB (Linear Upper Confidence Bound)
+ * 
+ * برای هر action:
+ *   - A_a: ماتریس (d × d)
+ *   - b_a: بردار (d)
+ *   - θ_a = A_a^-1 × b_a
+ *   - UCB_a = θ_a^T × x + α × sqrt(x^T × A_a^-1 × x)
+ * 
+ * انتخاب action با بالاترین UCB
+ */
+export class LinUCB {
+  private alpha = 0.5; // exploration parameter
+
+  /**
+   * انتخاب action
+   */
+  selectAction(context: number[]): {
+    action: RlAction;
+    ucbScores: Record<string, number>;
+    isExploration: boolean;
+  } {
+    const d = context.length;
+    const ucbScores: Record<string, number> = {};
+
+    for (const action of RL_CONFIG.actions) {
+      const params = this.loadParams(action, d);
+      const theta = this.computeTheta(params.A, params.b);
+      const p = this.computeUCB(context, params.A, theta, this.alpha);
+
+      ucbScores[action] = p;
+    }
+
+    // انتخاب بالاترین
+    let bestAction: RlAction = 'allow';
+    let bestScore = -Infinity;
+
+    for (const [action, score] of Object.entries(ucbScores)) {
+      if (score > bestScore) {
+        bestScore = score;
+        bestAction = action as RlAction;
+      }
+    }
+
+    // exploration flag: اگر UCB بالا به دلیل uncertainty باشه
+    const isExploration = Math.random() < RL_CONFIG.epsilon;
+
+    return {
+      action: isExploration
+        ? RL_CONFIG.actions[Math.floor(Math.random() * RL_CONFIG.actions.length)]
+        : bestAction,
+      ucbScores,
+      isExploration
+    };
+  }
+
+  /**
+   * بهروزرسانی بعد از مشاهده reward
+   * A_a ← A_a + x × x^T
+   * b_a ← b_a + r × x
+   */
+  update(action: RlAction, context: number[], reward: number) {
+    const d = context.length;
+    const params = this.loadParams(action, d);
+
+    // A += x × x^T
+    const newA = params.A.map((row, i) =>
+      row.map((val, j) => val + context[i] * context[j])
+    );
+
+    // b += r × x
+    const newB = params.b.map((val, i) => val + reward * context[i]);
+
+    this.saveParams(action, newA, newB, 1, reward);
+  }
+
+  // ───── Linear Algebra Helpers ─────
+
+  private computeTheta(A: number[][], b: number[]): number[] {
+    const invA = this.invertMatrix(A);
+    return this.matVec(invA, b);
+  }
+
+  private computeUCB(
+    context: number[],
+    A: number[][],
+    theta: number[],
+    alpha: number
+  ): number {
+    const exploitation = this.dot(theta, context);
+    const invA = this.invertMatrix(A);
+    const quadForm = this.quadraticForm(context, invA);
+    const exploration = alpha * Math.sqrt(Math.max(0, quadForm));
+    return exploitation + exploration;
+  }
+
+  private dot(a: number[], b: number[]): number {
+    return a.reduce((sum, ai, i) => sum + ai * b[i], 0);
+  }
+
+  private matVec(m: number[][], v: number[]): number[] {
+    return m.map(row => this.dot(row, v));
+  }
+
+  private quadraticForm(x: number[], m: number[][]): number {
+    const mx = this.matVec(m, x);
+    return this.dot(x, mx);
+  }
+
+  /**
+   * ماتریس معکوس با Gauss-Jordan
+   */
+  private invertMatrix(matrix: number[][]): number[][] {
+    const n = matrix.length;
+    // augmented [A | I]
+    const aug: number[][] = matrix.map((row, i) => [
+      ...row,
+      ...Array(n).fill(0).map((_, j) => (i === j ? 1 : 0))
+    ]);
+
+    // Forward elimination
+    for (let i = 0; i < n; i++) {
+      // pivot
+      let maxRow = i;
+      for (let k = i + 1; k < n; k++) {
+        if (Math.abs(aug[k][i]) > Math.abs(aug[maxRow][i])) maxRow = k;
+      }
+      [aug[i], aug[maxRow]] = [aug[maxRow], aug[i]];
+
+      // در صورت نزدیک به صفر، regularization اضافه کن
+      if (Math.abs(aug[i][i]) < 1e-10) aug[i][i] = 1e-10;
+
+      // normalize
+      const pivot = aug[i][i];
+      for (let j = 0; j < 2 * n; j++) aug[i][j] /= pivot;
+
+      // eliminate
+      for (let k = 0; k < n; k++) {
+        if (k === i) continue;
+        const factor = aug[k][i];
+        for (let j = 0; j < 2 * n; j++) {
+          aug[k][j] -= factor * aug[i][j];
+        }
+      }
+    }
+
+    return aug.map(row => row.slice(n));
+  }
+
+  // ───── DB ─────
+
+  private loadParams(action: RlAction, d: number) {
+    const row = db.prepare('SELECT * FROM rl_linucb WHERE action = ?')
+      .get(action) as any;
+
+    if (!row) {
+      return {
+        A: Array(d).fill(0).map((_, i) =>
+          Array(d).fill(0).map((_, j) => (i === j ? 1 : 0))  // identity
+        ),
+        b: Array(d).fill(0)
+      };
+    }
+
+    return {
+      A: JSON.parse(row.a_matrix),
+      b: JSON.parse(row.b_vector)
+    };
+  }
+
+  private saveParams(
+    action: RlAction,
+    A: number[][],
+    b: number[],
+    pullsDelta: number,
+    rewardDelta: number
+  ) {
+    db.prepare(`
+      INSERT INTO rl_linucb (action, a_matrix, b_vector, pulls, total_reward, last_updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(action) DO UPDATE SET
+        a_matrix = ?,
+        b_vector = ?,
+        pulls = pulls + ?,
+        total_reward = total_reward + ?,
+        last_updated_at = ?
+    `).run(
+      action,
+      JSON.stringify(A),
+      JSON.stringify(b),
+      pullsDelta,
+      rewardDelta,
+      Date.now(),
+      JSON.stringify(A),
+      JSON.stringify(b),
+      pullsDelta,
+      rewardDelta,
+      Date.now()
+    );
+  }
+
+  getStats() {
+    const rows = db.prepare('SELECT * FROM rl_linucb').all() as any[];
+    return rows.map(r => ({
+      action: r.action,
+      pulls: r.pulls,
+      avgReward: r.pulls > 0 ? r.total_reward / r.pulls : 0
+    }));
+  }
+}
+
+export const linUCB = new LinUCB();
+```
+
+---
+
+📊 server/rl/rewardTracker.ts
+
+```typescript
+import db from '../services/db.service.js';
+import { RL_CONFIG } from '../config/rl.config.js';
+import crypto from 'crypto';
+
+export class RewardTracker {
+  /**
+   * ثبت رویداد + برنامهریزی برای محاسبه reward بعداً
+   */
+  recordEvent(params: {
+    userId?: string;
+    sessionId?: string;
+    ipAddress: string;
+    path: string;
+    context: number[];
+    action: string;
+    policyAction: string;
+    executedAction: string;
+    isExploration: boolean;
+    qValues?: Record<string, number>;
+    confidence?: number;
+    modelVersion?: number;
+  }): string {
+    const id = crypto.randomUUID();
+    const contextHash = crypto
+      .createHash('md5')
+      .update(params.context.map(v => Math.floor(v * 10)).join(','))
+      .digest('hex');
+
+    db.prepare(`
+      INSERT INTO rl_events 
+        (id, user_id, session_id, ip_address, path, context_vector, context_hash,
+         action, policy_action, executed_action, exploration, q_values, confidence,
+         model_version, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      params.userId || null,
+      params.sessionId || null,
+      params.ipAddress,
+      params.path,
+      JSON.stringify(params.context),
+      contextHash,
+      params.action,
+      params.policyAction,
+      params.executedAction,
+      params.isExploration ? 1 : 0,
+      params.qValues ? JSON.stringify(params.qValues) : null,
+      params.confidence ?? 0,
+      params.modelVersion ?? 0,
+      Date.now()
+    );
+
+    return id;
+  }
+
+  /**
+   * ثبت reward برای یک event
+   */
+  recordReward(
+    eventId: string,
+    reward: number,
+    source: string
+  ) {
+    db.prepare(`
+      UPDATE rl_events SET
+        reward = ?, reward_source = ?, reward_at = ?
+      WHERE id = ?
+    `).run(reward, source, Date.now(), eventId);
+  }
+
+  /**
+   * محاسبه خودکار reward بر اساس نتیجه
+   * 
+   * این تابع بعد از یه بازه (مثلاً 60 ثانیه) صدا زده میشه
+   * و نتیجه واقعی رو بررسی میکنه
+   */
+  async computeAutoReward(eventId: string) {
+    const event = db.prepare('SELECT * FROM rl_events WHERE id = ?')
+      .get(eventId) as any;
+
+    if (!event || event.reward !== null) return;
+
+    // نتیجه را از جدولهای دیگر بگیر
+    const userId = event.user_id;
+    const since = event.created_at;
+    const within = since + RL_CONFIG.rewardDelayMs;
+
+    // ───── نشانههای مثبت ─────
+    // 1. اگر کاربر بعدش موفق شد
+    const successAfter = db.prepare(`
+      SELECT COUNT(*) as c FROM threat_intel_events 
+      WHERE user_id = ? AND created_at > ? AND created_at < ? AND action = 'allowed'
+    `).get(userId, since, within) as { c: number };
+
+    // 2. اگر حمله بلاک شد
+    const attackBlocked = db.prepare(`
+      SELECT COUNT(*) as c FROM threat_intel_events 
+      WHERE user_id = ? AND created_at > ? AND created_at < ? AND action = 'blocked'
+    `).get(userId, since, within) as { c: number };
+
+    // ───── محاسبه reward ─────
+    const R = RL_CONFIG.rewards;
+    let reward = 0;
+
+    if (event.executed_action === 'allow') {
+      if (successAfter.c > 0) reward += R.legitAllow;
+      if (attackBlocked.c > 0) reward += R.attackAllow; // اشتباه بود
+    } else if (event.executed_action === 'block') {
+      if (attackBlocked.c > 0) reward += R.attackBlock;
+      if (successAfter.c > 0) reward += R.legitBlock; // کاربر مشروع رو بلاک کردی
+    } else if (event.executed_action === 'challenge' || event.executed_action === 'step_up') {
+      if (successAfter.c > 0) reward += R.stepUpSuccess;
+      // اگر چالش رو abandon کرد
+      const abandoned = db.prepare(`
+        SELECT COUNT(*) as c FROM step_up_challenges 
+        WHERE user_id = ? AND created_at > ? AND created_at < ? AND solved_at IS NULL
+      `).get(userId, since, within) as { c: number };
+      if (abandoned.c > 0) reward += R.stepUpAbandon;
+      if (attackBlocked.c > 0) reward += R.falseChallenge * -1;
+    }
+
+    this.recordReward(eventId, reward, 'auto');
+    return reward;
+  }
+
+  /**
+   * Batch compute rewards برای event های pending
+   */
+  computeAllPending() {
+    const pending = db.prepare(`
+      SELECT id FROM rl_events 
+      WHERE reward IS NULL 
+        AND created_at < ?
+      LIMIT 500
+    `).all(Date.now() - RL_CONFIG.rewardDelayMs) as { id: string }[];
+
+    let count = 0;
+    for (const { id } of pending) {
+      this.computeAutoReward(id);
+      count++;
+    }
+    return count;
+  }
+
+  getStats() {
+    const total = db.prepare('SELECT COUNT(*) as c FROM rl_events')
+      .get() as { c: number };
+    const rewarded = db.prepare('SELECT COUNT(*) as c FROM rl_events WHERE reward IS NOT NULL')
+      .get() as { c: number };
+    const avgReward = db.prepare('SELECT AVG(reward) as avg FROM rl_events WHERE reward IS NOT NULL')
+      .get() as { avg: number | null };
+
+    const byAction = db.prepare(`
+      SELECT action, COUNT(*) as count, AVG(reward) as avg_reward
+      FROM rl_events 
+      WHERE reward IS NOT NULL
+      GROUP BY action
+    `).all();
+
+    return {
+      totalEvents: total.c,
+      rewardedEvents: rewarded.c,
+      avgReward: avgReward.avg || 0,
+      byAction
+    };
+  }
+}
+
+export const rewardTracker = new RewardTracker();
+```
+
+---
+
+🧠 server/services/rlPolicy.service.ts — هسته RL
+
+```typescript
+import crypto from 'crypto';
+import db from './db.service.js';
+import { RL_CONFIG, RlAction } from '../config/rl.config.js';
+import { qLearning } from '../rl/qLearning.js';
+import { linUCB } from '../rl/contextualBandit.js';
+import { rewardTracker } from '../rl/rewardTracker.js';
+
+export interface RlDecision {
+  action: RlAction;
+  policyAction: RlAction;
+  confidence: number;
+  context: number[];
+  isExploration: boolean;
+  qValues?: Record<string, number>;
+  ucbScores?: Record<string, number>;
+  shadowMode: boolean;
+  eventId: string;
+}
+
+export class RlPolicyService {
+  private eventsSeen = 0;
+  private modelVersion = 1;
+
+  /**
+   * تصمیمگیری با RL
+   */
+  decide(params: {
+    userId?: string;
+    sessionId?: string;
+    ipAddress: string;
+    path: string;
+    // context raw inputs
+    trustScore: number;           // 0-100
+    vpnRisk: number;              // 0-100
+    botRisk: number;              // 0-100
+    threatRisk: number;           // 0-100
+    mlAnomalyScore: number;       // 0-1
+    sessionAgeMs: number;
+    isNewDevice: boolean;
+    role: string;
+    pathSensitivity: number;      // 0-1
+    recentFailures: number;
+    geoRisk: number;              // 0-1
+  }): RlDecision {
+    // ───── 1. ساخت context vector (12 بُعد نرمالیزه) ─────
+    const context = this.buildContext(params);
+
+    // ───── 2. انتخاب action ─────
+    let decision: { action: RlAction; qValues?: any; ucbScores?: any; isExploration: boolean };
+
+    if (RL_CONFIG.algorithm === 'linucb') {
+      decision = linUCB.selectAction(context);
+    } else {
+      decision = qLearning.selectAction(context);
+    }
+
+    const policyAction = decision.action;
+
+    // ───── 3. Shadow mode ─────
+    const shadowMode = RL_CONFIG.shadowMode || this.eventsSeen < RL_CONFIG.minEventsBeforeActive;
+    const executedAction = shadowMode
+      ? this.getHeuristicAction(params)
+      : policyAction;
+
+    // ───── 4. ثبت رویداد ─────
+    const eventId = rewardTracker.recordEvent({
+      userId: params.userId,
+      sessionId: params.sessionId,
+      ipAddress: params.ipAddress,
+      path: params.path,
+      context,
+      action: policyAction,
+      policyAction,
+      executedAction,
+      isExploration: decision.isExploration,
+      qValues: decision.qValues,
+      modelVersion: this.modelVersion
+    });
+
+    this.eventsSeen++;
+
+    return {
+      action: executedAction,
+      policyAction,
+      confidence: this.computeConfidence(decision),
+      context,
+      isExploration: decision.isExploration,
+      qValues: decision.qValues,
+      ucbScores: decision.ucbScores,
+      shadowMode,
+      eventId
+    };
+  }
+
+  /**
+   * ثبت reward + بهروزرسانی مدل
+   */
+  learn(params: {
+    eventId: string;
+    reward: number;
+    nextContext?: number[];
+  }) {
+    // ثبت پاداش
+    rewardTracker.recordReward(params.eventId, params.reward, 'manual');
+
+    // پیدا کردن event
+    const event = db.prepare('SELECT * FROM rl_events WHERE id = ?')
+      .get(params.eventId) as any;
+    if (!event) return;
+
+    const context = JSON.parse(event.context_vector);
+    const nextContext = params.nextContext || context;
+    const action = event.action as RlAction;
+
+    // بهروزرسانی مدل
+    if (RL_CONFIG.algorithm === 'linucb') {
+      linUCB.update(action, context, params.reward);
+    } else {
+      const stateHash = crypto
+        .createHash('md5')
+        .update(context.map((v: number) => Math.min(4, Math.floor(v * 5))).join(','))
+        .digest('hex').slice(0, 16);
+
+      const nextStateHash = crypto
+        .createHash('md5')
+        .update(nextContext.map((v: number) => Math.min(4, Math.floor(v * 5))).join(','))
+        .digest('hex').slice(0, 16);
+
+      qLearning.update(stateHash, action, params.reward, nextStateHash);
+    }
+  }
+
+  /**
+   * Batch learn از event های auto-rewarded
+   */
+  learnFromPending() {
+    const count = rewardTracker.computeAllPending();
+    return { processed: count };
+  }
+
+  /**
+   * ساخت policy snapshot
+   */
+  snapshot() {
+    const algorithm = RL_CONFIG.algorithm;
+
+    let policyData: any;
+    if (algorithm === 'linucb') {
+      policyData = db.prepare('SELECT * FROM rl_linucb').all();
+    } else {
+      policyData = db.prepare('SELECT * FROM rl_q_table').all();
+    }
+
+    const stats = rewardTracker.getStats();
+
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO rl_policy_snapshots 
+        (id, model_version, algorithm, policy_data, events_seen, avg_reward, shadow_mode, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      this.modelVersion,
+      algorithm,
+      JSON.stringify(policyData),
+      this.eventsSeen,
+      stats.avgReward,
+      RL_CONFIG.shadowMode ? 1 : 0,
+      Date.now()
+    );
+
+    return { id, modelVersion: this.modelVersion, stats };
+  }
+
+  /**
+   * فعالسازی snapshot (خروج از shadow mode)
+   */
+  activateSnapshot(snapshotId: string) {
+    const snapshot = db.prepare('SELECT * FROM rl_policy_snapshots WHERE id = ?')
+      .get(snapshotId) as any;
+    if (!snapshot) throw new Error('Snapshot not found');
+
+    // غیرفعال کردن قبلی
+    db.prepare('UPDATE rl_policy_snapshots SET is_active = 0').run();
+
+    // فعال جدید
+    db.prepare('UPDATE rl_policy_snapshots SET is_active = 1 WHERE id = ?')
+      .run(snapshotId);
+
+    // خروج از shadow mode
+    (RL_CONFIG as any).shadowMode = false;
+
+    return { activated: true };
+  }
+
+  // ═══════════════════════════════════════════
+  //  Helpers
+  // ═══════════════════════════════════════════
+
+  private buildContext(p: any): number[] {
+    return [
+      p.trustScore / 100,
+      p.vpnRisk / 100,
+      p.botRisk / 100,
+      p.threatRisk / 100,
+      p.mlAnomalyScore,
+      Math.min(1, p.sessionAgeMs / (24 * 3600 * 1000)),
+      p.isNewDevice ? 1 : 0,
+      p.role === 'admin' ? 1 : 0,
+      p.pathSensitivity,
+      (new Date().getHours()) / 24,
+      Math.min(1, p.recentFailures / 10),
+      p.geoRisk
+    ];
+  }
+
+  private getHeuristicAction(p: any): RlAction {
+    // منطق ساده pre-RL
+    if (p.trustScore < 30 || p.threatRisk > 80 || p.mlAnomalyScore > 0.9) return 'block';
+    if (p.trustScore < 50 || p.vpnRisk > 70 || p.botRisk > 60 || p.mlAnomalyScore > 0.75) return 'challenge';
+    if (p.pathSensitivity > 0.7 && p.trustScore < 70) return 'step_up';
+    return 'allow';
+  }
+
+  private computeConfidence(decision: any): number {
+    if (decision.qValues) {
+      const values = Object.values(decision.qValues) as number[];
+      if (values.length === 0) return 0;
+      const max = Math.max(...values);
+      const min = Math.min(...values);
+      const range = max - min;
+      return range > 0 ? (max - min) / Math.abs(max || 1) : 0.5;
+    }
+    if (decision.ucbScores) {
+      const values = Object.values(decision.ucbScores) as number[];
+      const sorted = [...values].sort((a, b) => b - a);
+      if (sorted.length < 2) return 0.5;
+      return Math.min(1, (sorted[0] - sorted[1]) / Math.abs(sorted[0] || 1));
+    }
+    return 0.5;
+  }
+
+  getStats() {
+    const eventStats = rewardTracker.getStats();
+    const policyStats = RL_CONFIG.algorithm === 'linucb'
+      ? linUCB.getStats()
+      : qLearning.getStats();
+
+    const snapshots = db.prepare(`
+      SELECT * FROM rl_policy_snapshots ORDER BY created_at DESC LIMIT 10
+    `).all();
+
+    return {
+      enabled: RL_CONFIG.enabled,
+      algorithm: RL_CONFIG.algorithm,
+      shadowMode: RL_CONFIG.shadowMode,
+      eventsSeen: this.eventsSeen,
+      minEventsBeforeActive: RL_CONFIG.minEventsBeforeActive,
+      modelVersion: this.modelVersion,
+      eventStats,
+      policyStats,
+      snapshots
+    };
+  }
+
+  getRecentDecisions(limit = 50) {
+    return db.prepare(`
+      SELECT id, user_id, path, action, policy_action, executed_action,
+             exploration, reward, confidence, created_at
+      FROM rl_events 
+      ORDER BY created_at DESC LIMIT ?
+    `).all(limit);
+  }
+}
+
+export const rlPolicyService = new RlPolicyService();
+```
+
+---
+
+🔄 server/middleware/rlPolicy.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { rlPolicyService } from '../services/rlPolicy.service.js';
+import { RL_CONFIG } from '../config/rl.config.js';
+
+declare global {
+  namespace Express {
+    interface Request {
+      rl?: any;
+    }
+  }
+}
+
+export function rlPolicyGuard(req: Request, res: Response, next: NextFunction) {
+  if (!RL_CONFIG.enabled) return next();
+
+  const user = (req as any).user;
+  if (!user) return next();
+
+  const ip = req.ip || 'unknown';
+  const trust = (req as any).zt?.trust;
+  const vpn = (req as any).vpnDetection;
+  const bot = (req as any).botDetection;
+  const threat = (req as any).threatIntel;
+  const ml = (req as any).mlAnomaly;
+
+  // path sensitivity
+  const sensitive = /admin|wallet\/create|tx\/send|2fa\/disable/.test(req.path);
+  const pathSensitivity = sensitive ? 1 : 0.3;
+
+  try {
+    const decision = rlPolicyService.decide({
+      userId: user.sub,
+      sessionId: user.jti || user.sessionId,
+      ipAddress: ip,
+      path: req.path,
+      trustScore: trust?.score ?? 50,
+      vpnRisk: vpn?.riskScore ?? 0,
+      botRisk: bot?.riskScore ?? 0,
+      threatRisk: threat?.riskScore ?? 0,
+      mlAnomalyScore: ml?.score ?? 0,
+      sessionAgeMs: Date.now() - (trust?.components ? Date.now() : Date.now()),
+      isNewDevice: (req as any).zt?.device?.is_trusted === 0,
+      role: user.role || 'user',
+      pathSensitivity,
+      recentFailures: 0,
+      geoRisk: 0
+    });
+
+    req.rl = decision;
+
+    // ───── اجرا ─────
+    switch (decision.action) {
+      case 'block':
+        return res.status(403).json({
+          success: false,
+          code: 'RL_BLOCKED',
+          error: 'Access denied by adaptive policy',
+          confidence: decision.confidence
+        });
+
+      case 'step_up':
+        return res.status(403).json({
+          success: false,
+          code: 'RL_STEP_UP',
+          error: 'Additional verification required',
+          confidence: decision.confidence,
+          eventId: decision.eventId
+        });
+
+      case 'challenge':
+        return res.status(403).json({
+          success: false,
+          code: 'RL_CHALLENGE',
+          error: 'Challenge required',
+          confidence: decision.confidence,
+          eventId: decision.eventId
+        });
+
+      case 'allow':
+      default:
+        return next();
+    }
+  } catch (err) {
+    console.error('[RL] error:', err);
+    next();
+  }
+}
+```
+
+---
+
+🧠 server/services/federatedLearning.service.ts — سرور FL
+
+```typescript
+import crypto from 'crypto';
+import { FL_CONFIG } from '../config/federated.config.js';
+import { aggregate, ClientUpdate } from '../fl/fedAvg.js';
+import { applyDp } from '../fl/differentialPrivacy.js';
+import db from './db.service.js';
+
+export interface ClientWeightPayload {
+  clientId: string;
+  samples: number;
+  weights: number[][];
+  loss?: number;
+  localEpochs: number;
+}
+
+export class FederatedLearningService {
+  private currentRound: string | null = null;
+  private roundNumber = 0;
+
+  /**
+   * ایجاد round جدید
+   */
+  startRound(): { roundId: string; roundNumber: number; targetClients: number } {
+    // ───── 1. انتخاب کلاینتها ─────
+    const activeClients = db.prepare(`
+      SELECT id FROM fl_clients 
+      WHERE is_active = 1 AND total_samples >= ?
+      ORDER BY RANDOM()
+      LIMIT ?
+    `).all(FL_CONFIG.minLocalSamples, FL_CONFIG.maxClients) as { id: string }[];
+
+    if (activeClients.length < FL_CONFIG.minClients) {
+      throw new Error(`Not enough clients: ${activeClients.length} < ${FL_CONFIG.minClients}`);
+    }
+
+    // نمونهگیری نسبی
+    const fraction = Math.max(
+      FL_CONFIG.minClients,
+      Math.floor(activeClients.length * FL_CONFIG.clientFraction)
+    );
+
+    this.roundNumber++;
+
+    // ───── 2. ثبت round ─────
+    const roundId = crypto.randomUUID();
+    const lastModel = db.prepare(`
+      SELECT version FROM fl_global_models ORDER BY version DESC LIMIT 1
+    `).get() as { version: number } | undefined;
+
+    db.prepare(`
+      INSERT INTO fl_rounds 
+        (id, round_number, status, target_clients, aggregation_algorithm,
+         global_model_version, started_at)
+      VALUES (?, ?, 'collecting', ?, ?, ?, ?)
+    `).run(
+      roundId,
+      this.roundNumber,
+      fraction,
+      FL_CONFIG.aggregation,
+      lastModel?.version || 0,
+      Date.now()
+    );
+
+    this.currentRound = roundId;
+
+    return {
+      roundId,
+      roundNumber: this.roundNumber,
+      targetClients: fraction
+    };
+  }
+
+  /**
+   * دریافت update از کلاینت
+   */
+  receiveUpdate(roundId: string, payload: ClientWeightPayload): { accepted: boolean; reason?: string } {
+    const round = db.prepare('SELECT * FROM fl_rounds WHERE id = ?')
+      .get(roundId) as any;
+    if (!round) return { accepted: false, reason: 'round_not_found' };
+    if (round.status !== 'collecting') return { accepted: false, reason: 'round_closed' };
+
+    // ───── 1. اعمال DP ─────
+    const { weights: dpWeights, noiseApplied } = applyDp(payload.weights);
+
+    // ───── 2. هش برای deduplication ─────
+    const hash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify(dpWeights))
+      .digest('hex');
+
+    const existing = db.prepare(
+      'SELECT id FROM fl_client_updates WHERE round_id = ? AND weights_hash = ?'
+    ).get(roundId, hash);
+    if (existing) return { accepted: false, reason: 'duplicate' };
+
+    // ───── 3. ذخیره ─────
+    try {
+      db.prepare(`
+        INSERT INTO fl_client_updates 
+          (id, round_id, client_id, samples_count, weights_blob, weights_hash,
+           loss, local_epochs, noise_added, received_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        roundId,
+        payload.clientId,
+        payload.samples,
+        JSON.stringify(dpWeights),
+        hash,
+        payload.loss ?? null,
+        payload.localEpochs,
+        noiseApplied ? 1 : 0,
+        Date.now()
+      );
+
+      // بهروزرسانی آمار کلاینت
+      db.prepare(`
+        UPDATE fl_clients SET
+          total_rounds = total_rounds + 1,
+          total_samples = total_samples + ?,
+          last_seen_at = ?
+        WHERE id = ?
+      `).run(payload.samples, Date.now(), payload.clientId);
+
+      // بهروزرسانی تعداد join شده
+      db.prepare('UPDATE fl_rounds SET joined_clients = joined_clients + 1 WHERE id = ?')
+        .run(roundId);
+
+      return { accepted: true };
+    } catch (err: any) {
+      return { accepted: false, reason: err.message };
+    }
+  }
+
+  /**
+   * تجمیع round و تولید مدل جدید
+   */
+  async aggregateRound(roundId: string): Promise<{ newVersion: number; participants: number }> {
+    const round = db.prepare('SELECT * FROM fl_rounds WHERE id = ?')
+      .get(roundId) as any;
+    if (!round) throw new Error('Round not found');
+
+    db.prepare('UPDATE fl_rounds SET status = ? WHERE id = ?')
+      .run('aggregating', roundId);
+
+    try {
+      const updates = db.prepare(`
+        SELECT * FROM fl_client_updates WHERE round_id = ?
+      `).all(roundId) as any[];
+
+      if (updates.length < FL_CONFIG.minClients) {
+        throw new Error(`Not enough updates: ${updates.length}`);
+      }
+
+      // ───── 1. آمادهسازی ─────
+      const clientUpdates: ClientUpdate[] = updates.map(u => ({
+        clientId: u.client_id,
+        samples: u.samples_count,
+        weights: JSON.parse(u.weights_blob)
+      }));
+
+      // ───── 2. تجمیع ─────
+      const aggregatedWeights = aggregate(clientUpdates, FL_CONFIG.aggregation);
+
+      // ───── 3. ذخیره مدل جدید ─────
+      const totalSamples = clientUpdates.reduce((s, u) => s + u.samples, 0);
+      const avgLoss = updates.reduce((s, u) => s + (u.loss || 0), 0) / updates.length;
+
+      const result = db.prepare(`
+        INSERT INTO fl_global_models 
+          (round_id, weights_blob, total_samples, participants, loss, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        roundId,
+        JSON.stringify(aggregatedWeights),
+        totalSamples,
+        updates.length,
+        avgLoss,
+        Date.now()
+      );
+
+      const newVersion = Number(result.lastInsertRowid);
+
+      // ───── 4. بهروزرسانی round ─────
+      db.prepare(`
+        UPDATE fl_rounds SET
+          status = 'completed',
+          completed_at = ?,
+          duration_ms = ? - started_at,
+          new_model_version = ?
+        WHERE id = ?
+      `).run(Date.now(), Date.now(), newVersion, roundId);
+
+      this.currentRound = null;
+
+      return {
+        newVersion,
+        participants: updates.length
+      };
+    } catch (err: any) {
+      db.prepare(`
+        UPDATE fl_rounds SET status = 'failed', error = ?, completed_at = ?
+        WHERE id = ?
+      `).run(err.message, Date.now(), roundId);
+      throw err;
+    }
+  }
+
+  /**
+   * ثبتنام کلاینت
+   */
+  registerClient(params: {
+    userId?: string;
+    fingerprint: string;
+  }): { clientId: string } {
+    const existing = db.prepare('SELECT id FROM fl_clients WHERE device_fingerprint = ?')
+      .get(params.fingerprint) as { id: string } | undefined;
+
+    if (existing) {
+      db.prepare(`
+        UPDATE fl_clients SET
+          is_active = 1,
+          last_seen_at = ?,
+          opted_out_at = NULL
+        WHERE id = ?
+      `).run(Date.now(), existing.id);
+      return { clientId: existing.id };
+    }
+
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO fl_clients 
+        (id, user_id, device_fingerprint, first_seen_at, last_seen_at, opted_in_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      params.userId || null,
+      params.fingerprint,
+      Date.now(),
+      Date.now(),
+      Date.now()
+    );
+
+    return { clientId: id };
+  }
+
+  /**
+   * خروج کلاینت
+   */
+  optOut(clientId: string) {
+    db.prepare(`
+      UPDATE fl_clients SET is_active = 0, opted_out_at = ? WHERE id = ?
+    `).run(Date.now(), clientId);
+  }
+
+  /**
+   * دریافت مدل جهانی برای کلاینت
+   */
+  getGlobalModel(): { version: number; weights: number[][] } | null {
+    const row = db.prepare(`
+      SELECT * FROM fl_global_models ORDER BY version DESC LIMIT 1
+    `).get() as any;
+
+    if (!row) return null;
+    return {
+      version: row.version,
+      weights: JSON.parse(row.weights_blob)
+    };
+  }
+
+  getStats() {
+    const totalClients = db.prepare('SELECT COUNT(*) as c FROM fl_clients WHERE is_active = 1')
+      .get() as { c: number };
+    const totalRounds = db.prepare('SELECT COUNT(*) as c FROM fl_rounds')
+      .get() as { c: number };
+    const globalModel = db.prepare('SELECT * FROM fl_global_models ORDER BY version DESC LIMIT 1')
+      .get() as any;
+
+    const recentRounds = db.prepare(`
+      SELECT * FROM fl_rounds ORDER BY started_at DESC LIMIT 20
+    `).all();
+
+    return {
+      enabled: FL_CONFIG.enabled,
+      aggregation: FL_CONFIG.aggregation,
+      dpEnabled: FL_CONFIG.dp.enabled,
+      activeClients: totalClients.c,
+      minClients: FL_CONFIG.minClients,
+      totalRounds: totalRounds.c,
+      globalModel: globalModel ? {
+        version: globalModel.version,
+        participants: globalModel.participants,
+        totalSamples: globalModel.total_samples,
+        loss: globalModel.loss,
+        createdAt: globalModel.created_at
+      } : null,
+      recentRounds
+    };
+  }
+}
+
+export const flService = new FederatedLearningService();
+```
+
+---
+
+🛣️ server/routes/federated.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { flService } from '../services/federatedLearning.service.js';
+
+const router = Router();
+
+// ═══════════════════════════════════════════
+//  Client Endpoints (نیاز به auth)
+// ═══════════════════════════════════════════
+
+router.post('/register', requireAuth, (req, res, next) => {
+  try {
+    const schema = z.object({ fingerprint: z.string().min(16) });
+    const { fingerprint } = schema.parse(req.body);
+    const result = flService.registerClient({
+      userId: req.user!.sub,
+      fingerprint
+    });
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+router.post('/opt-out', requireAuth, (req, res, next) => {
+  try {
+    const schema = z.object({ clientId: z.string() });
+    const { clientId } = schema.parse(req.body);
+    flService.optOut(clientId);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// دریافت مدل جهانی
+router.get('/global-model', requireAuth, (_req, res) => {
+  const model = flService.getGlobalModel();
+  res.json({ success: true, data: model });
+});
+
+// دریافت round فعال
+router.get('/current-round', requireAuth, (_req, res) => {
+  const { default: db } = require('../services/db.service.js');
+  const round = db.prepare(`
+    SELECT * FROM fl_rounds WHERE status = 'collecting' ORDER BY started_at DESC LIMIT 1
+  `).get();
+  res.json({ success: true, data: round || null });
+});
+
+// ارسال update
+router.post('/update/:roundId', requireAuth, (req, res, next) => {
+  try {
+    const schema = z.object({
+      clientId: z.string(),
+      samples: z.number().int().min(1),
+      weights: z.array(z.array(z.number())),
+      loss: z.number().optional(),
+      localEpochs: z.number().int().min(1)
+    });
+    const payload = schema.parse(req.body);
+
+    const result = flService.receiveUpdate(req.params.roundId, payload);
+    res.json({ success: result.accepted, data: result });
+  } catch (err) { next(err); }
+});
+
+// ═══════════════════════════════════════════
+//  Admin Endpoints
+// ═══════════════════════════════════════════
+
+router.use('/admin', requireAuth, requireRole('admin'));
+
+router.get('/admin/stats', (_req, res) => {
+  res.json({ success: true, data: flService.getStats() });
+});
+
+router.post('/admin/start-round', (req, res, next) => {
+  try {
+    const result = flService.startRound();
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+router.post('/admin/aggregate/:roundId', async (req, res, next) => {
+  try {
+    const result = await flService.aggregateRound(req.params.roundId);
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+export default router;
+```
+
+---
+
+🛣️ server/routes/rl.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { rlPolicyService } from '../services/rlPolicy.service.js';
+
+const router = Router();
+router.use(requireAuth, requireRole('admin'));
+
+router.get('/stats', (_req, res) => {
+  res.json({ success: true, data: rlPolicyService.getStats() });
+});
+
+router.get('/decisions', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  res.json({ success: true, data: rlPolicyService.getRecentDecisions(limit) });
+});
+
+router.post('/learn', async (req, res, next) => {
+  try {
+    const schema = z.object({
+      eventId: z.string(),
+      reward: z.number(),
+      nextContext: z.array(z.number()).optional()
+    });
+    const body = schema.parse(req.body);
+    rlPolicyService.learn(body);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+router.post('/learn-pending', (_req, res, next) => {
+  try {
+    const result = rlPolicyService.learnFromPending();
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+router.post('/snapshot', (_req, res, next) => {
+  try {
+    const result = rlPolicyService.snapshot();
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+router.post('/activate/:snapshotId', (req, res, next) => {
+  try {
+    const result = rlPolicyService.activateSnapshot(req.params.snapshotId);
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+export default router;
+```
+
+---
+
+🖥️ src/fl/localTrainer.ts — آموزش سمت کلاینت
+
+```typescript
+import * as tf from '@tensorflow/tfjs';
+
+/**
+ * کلاینت Federated Learning
+ * 
+ * آموزش مدل محلی روی دادههایی که هرگز از مرورگر خارج نمیشن
+ * فقط weights نهایی آپلود میشه
+ */
+
+const LOCAL_DB_NAME = 'apz_fl_local';
+const LOCAL_DB_VERSION = 1;
+const STORE_NAME = 'feature_vectors';
+
+export interface LocalFeatureVector {
+  features: number[];
+  timestamp: number;
+}
+
+export class LocalTrainer {
+  private db: IDBDatabase | null = null;
+  private model: tf.LayersModel | null = null;
+  private inputDim = 20;
+  private hiddenDim = 16;
+  private latentDim = 8;
+
+  /**
+   * راهاندازی IndexedDB برای ذخیره داده محلی
+   */
+  async init(): Promise<void> {
+    this.db = await this.openDb();
+  }
+
+  private openDb(): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(LOCAL_DB_NAME, LOCAL_DB_VERSION);
+
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+        }
+      };
+
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  /**
+   * ذخیره یک feature vector محلی
+   */
+  async store(vector: number[]): Promise<void> {
+    if (!this.db) await this.init();
+
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+
+      store.add({
+        features: vector,
+        timestamp: Date.now()
+      });
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  /**
+   * خواندن همه دادههای محلی
+   */
+  async loadAll(): Promise<number[][]> {
+    if (!this.db) await this.init();
+
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const rows = req.result as LocalFeatureVector[];
+        resolve(rows.map(r => r.features));
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async count(): Promise<number> {
+    if (!this.db) await this.init();
+
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction(STORE_NAME, 'readonly');
+      const req = tx.objectStore(STORE_NAME).count();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  /**
+   * ساخت مدل محلی از روی مدل جهانی
+   */
+  buildModel(): tf.LayersModel {
+    const model = tf.sequential();
+
+    model.add(tf.layers.dense({
+      inputShape: [this.inputDim],
+      units: this.hiddenDim,
+      activation: 'relu'
+    }));
+    model.add(tf.layers.dense({
+      units: this.latentDim,
+      activation: 'relu'
+    }));
+    model.add(tf.layers.dense({
+      units: this.hiddenDim,
+      activation: 'relu'
+    }));
+    model.add(tf.layers.dense({
+      units: this.inputDim,
+      activation: 'sigmoid'
+    }));
+
+    model.compile({
+      optimizer: tf.train.adam(0.01),
+      loss: 'meanSquaredError'
+    });
+
+    this.model = model;
+    return model;
+  }
+
+  /**
+   * بارگذاری weights جهانی روی مدل محلی
+   */
+  async loadGlobalWeights(weights: number[][]): Promise<void> {
+    if (!this.model) this.buildModel();
+    await this.model!.setWeights(weights.map(w => tf.tensor(w)));
+  }
+
+  /**
+   * استخراج weights از مدل (برای آپلود)
+   */
+  extractWeights(): number[][] {
+    if (!this.model) throw new Error('Model not built');
+    const weights = this.model.getWeights();
+    return weights.map(w => Array.from(w.dataSync()));
+  }
+
+  /**
+   * آموزش محلی روی دادهها
+   */
+  async trainLocal(epochs = 3, batchSize = 16): Promise<{
+    samples: number;
+    loss: number;
+    weights: number[][];
+  }> {
+    const data = await this.loadAll();
+    if (data.length < 20) {
+      throw new Error(`Not enough local data: ${data.length}`);
+    }
+
+    if (!this.model) this.buildModel();
+
+    const tensor = tf.tensor2d(data);
+
+    const history = await this.model!.fit(tensor, tensor, {
+      epochs,
+      batchSize: Math.min(batchSize, data.length),
+      shuffle: true,
+      verbose: 0
+    });
+
+    const finalLoss = history.history.loss[history.history.loss.length - 1] as number;
+    const weights = this.extractWeights();
+
+    tensor.dispose();
+
+    return {
+      samples: data.length,
+      loss: finalLoss,
+      weights
+    };
+  }
+
+  /**
+   * پاک کردن دادههای قدیمی
+   */
+  async prune(olderThanMs = 30 * 24 * 3600 * 1000): Promise<number> {
+    if (!this.db) await this.init();
+
+    const cutoff = Date.now() - olderThanMs;
+
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.openCursor();
+      let deleted = 0;
+
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) return;
+        const value = cursor.value as LocalFeatureVector;
+        if (value.timestamp < cutoff) {
+          cursor.delete();
+          deleted++;
+        }
+        cursor.continue();
+      };
+
+      tx.oncomplete = () => resolve(deleted);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+}
+
+export const localTrainer = new LocalTrainer();
+```
+
+---
+
+🪝 src/fl/useFederatedClient.ts
+
+```typescript
+import { useEffect, useRef, useState } from 'react';
+import { localTrainer } from './localTrainer';
+
+const OPT_IN_KEY = 'apz_fl_opted_in';
+const CLIENT_ID_KEY = 'apz_fl_client_id';
+
+interface FederatedState {
+  optedIn: boolean;
+  localSamples: number;
+  lastRoundAt: number | null;
+  isTraining: boolean;
+  lastError: string | null;
+}
+
+export function useFederatedClient(apiCall: (path: string, opts?: any) => Promise<any>) {
+  const [state, setState] = useState<FederatedState>({
+    optedIn: localStorage.getItem(OPT_IN_KEY) === 'true',
+    localSamples: 0,
+    lastRoundAt: null,
+    isTraining: false,
+    lastError: null
+  });
+
+  const timerRef = useRef<number | null>(null);
+
+  // ───── راهاندازی ─────
+  useEffect(() => {
+    localTrainer.init().then(async () => {
+      const count = await localTrainer.count();
+      setState(s => ({ ...s, localSamples: count }));
+    });
+  }, []);
+
+  // ───── شرکت در rounds ─────
+  useEffect(() => {
+    if (!state.optedIn) return;
+
+    const run = async () => {
+      try {
+        // 1. چک round فعال
+        const { data: round } = await apiCall('/fl/current-round');
+        if (!round) return;
+
+        // 2. بارگذاری مدل جهانی
+        const { data: globalModel } = await apiCall('/fl/global-model');
+        if (globalModel) {
+          await localTrainer.loadGlobalWeights(globalModel.weights);
+        }
+
+        // 3. آموزش محلی
+        setState(s => ({ ...s, isTraining: true }));
+        const result = await localTrainer.trainLocal(3, 16);
+
+        // 4. ارسال فقط weights (نه داده خام)
+        const clientId = localStorage.getItem(CLIENT_ID_KEY);
+        await apiCall(`/fl/update/${round.id}`, {
+          method: 'POST',
+          body: JSON.stringify({
+            clientId,
+            samples: result.samples,
+            weights: result.weights,
+            loss: result.loss,
+            localEpochs: 3
+          })
+        });
+
+        setState(s => ({
+          ...s,
+          isTraining: false,
+          lastRoundAt: Date.now(),
+          lastError: null
+        }));
+      } catch (err: any) {
+        setState(s => ({ ...s, isTraining: false, lastError: err.message }));
+      }
+    };
+
+    // هر 5 دقیقه چک کن
+    timerRef.current = window.setInterval(run, 5 * 60 * 1000);
+    run();
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [state.optedIn]);
+
+  const optIn = async (fingerprint: string) => {
+    const { data } = await apiCall('/fl/register', {
+      method: 'POST',
+      body: JSON.stringify({ fingerprint })
+    });
+
+    localStorage.setItem(OPT_IN_KEY, 'true');
+    localStorage.setItem(CLIENT_ID_KEY, data.clientId);
+    setState(s => ({ ...s, optedIn: true }));
+  };
+
+  const optOut = async () => {
+    const clientId = localStorage.getItem(CLIENT_ID_KEY);
+    if (clientId) {
+      await apiCall('/fl/opt-out', {
+        method: 'POST',
+        body: JSON.stringify({ clientId })
+      });
+    }
+
+    localStorage.setItem(OPT_IN_KEY, 'false');
+    setState(s => ({ ...s, optedIn: false }));
+  };
+
+  const recordLocalSample = (vector: number[]) => {
+    if (!state.optedIn) return;
+    localTrainer.store(vector).then(async () => {
+      const count = await localTrainer.count();
+      setState(s => ({ ...s, localSamples: count }));
+    });
+  };
+
+  return {
+    ...state,
+    optIn,
+    optOut,
+    recordLocalSample
+  };
+}
+```
+
+---
+
+🖥️ server/index.ts — ترتیب نهایی
+
+```typescript
+import flRoutes from './routes/federated.routes.js';
+import rlRoutes from './routes/rl.routes.js';
+import { rlPolicyGuard } from './middleware/rlPolicy.middleware.js';
+import { rewardTracker } from './rl/rewardTracker.js';
+
+// ... راهاندازی سرویسها ...
+
+// FL + RL routes
+app.use('/api/fl', flRoutes);
+app.use('/api/rl', rlRoutes);
+
+// ───── RL تصمیمگیر نهایی (جایگزین heuristic) ─────
+app.use('/api/wallet', requireAuth, zeroTrustGuard, mlAnomalyGuard, rlPolicyGuard, walletRoutes);
+app.use('/api/tx', requireAuth, zeroTrustGuard, mlAnomalyGuard, rlPolicyGuard, txRoutes);
+
+// ───── Background jobs ─────
+setInterval(() => {
+  // محاسبه reward برای event های pending
+  const processed = rewardTracker.computeAllPending();
+  if (processed > 0) {
+    console.log(`[RL] Auto-rewarded ${processed} events`);
+  }
+}, 5 * 60 * 1000);
+
+setInterval(async () => {
+  // شروع round FL جدید
+  try {
+    const { flService } = await import('./services/federatedLearning.service.js');
+    const round = flService.startRound();
+    console.log(`[FL] Started round #${round.roundNumber}`);
+  } catch (err: any) {
+    // اگر کلاینت کافی نیست، نادیده بگیر
+  }
+}, 60 * 60 * 1000); // هر ساعت
+```
+
+---
+
+🎨 کامپوننت src/components/admin/FederatedPanel.tsx
+
+```tsx
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../../api/client';
+
+export const FederatedPanel: React.FC = () => {
+  const [stats, setStats] = useState<any>(null);
+  const [starting, setStarting] = useState(false);
+  const [aggregating, setAggregating] = useState<string | null>(null);
+
+  const load = async () => {
+    const res = await apiClient.flAdminStats();
+    setStats(res);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const startRound = async () => {
+    setStarting(true);
+    try {
+      const res = await apiClient.flStartRound();
+      alert(`Round #${res.roundNumber} شروع شد (${res.targetClients} کلاینت)`);
+      load();
+    } catch (err: any) {
+      alert('خطا: ' + err.message);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const aggregate = async (roundId: string) => {
+    setAggregating(roundId);
+    try {
+      const res = await apiClient.flAggregate(roundId);
+      alert(`✅ مدل جدید v${res.newVersion} (${res.participants} نفر)`);
+      load();
+    } catch (err: any) {
+      alert('خطا: ' + err.message);
+    } finally {
+      setAggregating(null);
+    }
+  };
+
+  return (
+    <div className="admin-panel">
+      <h2>🤝 Federated Learning</h2>
+
+      {stats && (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <span>وضعیت</span>
+            <strong>{stats.enabled ? '✅ فعال' : '⛔'}</strong>
+          </div>
+          <div className="stat-card">
+            <span>الگوریتم</span>
+            <strong>{stats.aggregation}</strong>
+          </div>
+          <div className="stat-card">
+            <span>DP</span>
+            <strong>{stats.dpEnabled ? '🔒 فعال' : '⛔'}</strong>
+          </div>
+          <div className="stat-card">
+            <span>کلاینتها</span>
+            <strong>{stats.activeClients}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Rounds</span>
+            <strong>{stats.totalRounds}</strong>
+          </div>
+          {stats.globalModel && (
+            <div className="stat-card green">
+              <span>مدل جهانی</span>
+              <strong>v{stats.globalModel.version}</strong>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="ml-actions">
+        <button className="btn-primary" onClick={startRound} disabled={starting}>
+          {starting ? '⏳' : '🚀 شروع Round جدید'}
+        </button>
+      </div>
+
+      <h3>Round های اخیر</h3>
+      <table className="admin-table compact">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>وضعیت</th>
+            <th>هدف</th>
+            <th>شرکتکننده</th>
+            <th>الگوریتم</th>
+            <th>مدت</th>
+            <th>عملیات</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stats?.recentRounds?.map((r: any) => (
+            <tr key={r.id}>
+              <td>#{r.round_number}</td>
+              <td>
+                <span className={`badge ${r.status}`}>{r.status}</span>
+              </td>
+              <td>{r.target_clients}</td>
+              <td>{r.joined_clients}</td>
+              <td>{r.aggregation_algorithm}</td>
+              <td>{r.duration_ms ? `${(r.duration_ms / 1000).toFixed(1)}s` : '—'}</td>
+              <td>
+                {r.status === 'collecting' && r.joined_clients >= 3 && (
+                  <button
+                    className="btn-icon-success"
+                    onClick={() => aggregate(r.id)}
+                    disabled={aggregating === r.id}
+                  >
+                    {aggregating === r.id ? '…' : '✓'}
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+```
+
+---
+
+🎨 کامپوننت src/components/admin/RlPolicyPanel.tsx
+
+```tsx
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../../api/client';
+
+export const RlPolicyPanel: React.FC = () => {
+  const [stats, setStats] = useState<any>(null);
+  const [decisions, setDecisions] = useState<any[]>([]);
+
+  const load = async () => {
+    const [s, d] = await Promise.all([
+      apiClient.rlStats(),
+      apiClient.rlDecisions(50)
+    ]);
+    setStats(s);
+    setDecisions(d);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleSnapshot = async () => {
+    const res = await apiClient.rlSnapshot();
+    alert(`Snapshot گرفته شد: v${res.modelVersion}`);
+    load();
+  };
+
+  const handleActivate = async (id: string) => {
+    if (!confirm('این snapshot رو فعال کنم؟ (خروج از shadow mode)')) return;
+    await apiClient.rlActivate(id);
+    alert('✅ فعال شد');
+    load();
+  };
+
+  const getRewardColor = (r: number) => {
+    if (r > 1) return '#10b981';
+    if (r > 0) return '#84cc16';
+    if (r > -1) return '#f59e0b';
+    return '#ef4444';
+  };
+
+  return (
+    <div className="admin-panel">
+      <h2>🎰 Reinforcement Learning Policy</h2>
+
+      {stats && (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <span>الگوریتم</span>
+            <strong>{stats.algorithm}</strong>
+          </div>
+          <div className="stat-card">
+            <span>حالت</span>
+            <strong>
+              {stats.shadowMode ? '👁️ Shadow' : '⚡ Active'}
+            </strong>
+          </div>
+          <div className="stat-card">
+            <span>Events Seen</span>
+            <strong>{stats.eventsSeen?.toLocaleString()}</strong>
+          </div>
+          <div className="stat-card">
+            <span>میانگین Reward</span>
+            <strong style={{ color: getRewardColor(stats.eventStats?.avgReward || 0) }}>
+              {(stats.eventStats?.avgReward || 0).toFixed(3)}
+            </strong>
+          </div>
+        </div>
+      )}
+
+      <div className="ml-actions">
+        <button className="btn-primary" onClick={handleSnapshot}>
+          📸 Snapshot جدید
+        </button>
+        <button className="btn-secondary" onClick={() => apiClient.rlLearnPending().then(load)}>
+          🎓 یادگیری از pending
+        </button>
+      </div>
+
+      {/* ───── Snapshots ───── */}
+      {stats?.snapshots?.length > 0 && (
+        <>
+          <h3>Snapshots</h3>
+          <table className="admin-table compact">
+            <thead>
+              <tr>
+                <th>Version</th>
+                <th>الگوریتم</th>
+                <th>Events</th>
+                <th>Avg Reward</th>
+                <th>وضعیت</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.snapshots.map((s: any) => (
+                <tr key={s.id}>
+                  <td>v{s.model_version}</td>
+                  <td>{s.algorithm}</td>
+                  <td>{s.events_seen}</td>
+                  <td style={{ color: getRewardColor(s.avg_reward) }}>
+                    {s.avg_reward?.toFixed(3)}
+                  </td>
+                  <td>
+                    {s.is_active
+                      ? <span className="badge allow">فعال</span>
+                      : <span className="badge">غیرفعال</span>}
+                  </td>
+                  <td>
+                    {!s.is_active && (
+                      <button className="btn-icon-success" onClick={() => handleActivate(s.id)}>▶</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {/* ───── تصمیمات اخیر ───── */}
+      <h3>تصمیمات اخیر RL</h3>
+      <table className="admin-table compact">
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Policy</th>
+            <th>اجرا شده</th>
+            <th>Exploration</th>
+            <th>Reward</th>
+            <th>Confidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          {decisions.map(d => (
+            <tr key={d.id}>
+              <td><code>{d.path}</code></td>
+              <td><span className="badge">{d.policy_action}</span></td>
+              <td><span className={`badge ${d.executed_action}`}>{d.executed_action}</span></td>
+              <td>{d.exploration ? '🔍' : '—'}</td>
+              <td style={{ color: getRewardColor(d.reward || 0) }}>
+                {d.reward != null ? d.reward.toFixed(2) : '…'}
+              </td>
+              <td>{(d.confidence || 0).toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+```
+
+---
+
+🌐 متدهای جدید src/api/client.ts
+
+```typescript
+// ───── Federated Learning ─────
+flRegister: (fingerprint: string) =>
+  request<{ clientId: string }>('/fl/register', {
+    method: 'POST',
+    body: JSON.stringify({ fingerprint })
+  }),
+
+flOptOut: (clientId: string) =>
+  request<{}>('/fl/opt-out', {
+    method: 'POST',
+    body: JSON.stringify({ clientId })
+  }),
+
+flGlobalModel: () =>
+  request<any>('/fl/global-model'),
+
+flCurrentRound: () =>
+  request<any>('/fl/current-round'),
+
+flUpdate: (roundId: string, payload: any) =>
+  request<any>(`/fl/update/${roundId}`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }),
+
+flAdminStats: () =>
+  request<any>('/fl/admin/stats'),
+
+flStartRound: () =>
+  request<any>('/fl/admin/start-round', { method: 'POST' }),
+
+flAggregate: (roundId: string) =>
+  request<any>(`/fl/admin/aggregate/${roundId}`, { method: 'POST' }),
+
+// ───── RL ─────
+rlStats: () =>
+  request<any>('/rl/stats'),
+
+rlDecisions: (limit = 50) =>
+  request<any[]>(`/rl/decisions?limit=${limit}`),
+
+rlLearn: (eventId: string, reward: number) =>
+  request<{}>('/rl/learn', {
+    method: 'POST',
+    body: JSON.stringify({ eventId, reward })
+  }),
+
+rlLearnPending: () =>
+  request<any>('/rl/learn-pending', { method: 'POST' }),
+
+rlSnapshot: () =>
+  request<any>('/rl/snapshot', { method: 'POST' }),
+
+rlActivate: (snapshotId: string) =>
+  request<any>(`/rl/activate/${snapshotId}`, { method: 'POST' })
+```
+
+---
+
+🧪 تست سریع
+
+```bash
+# ═══════════════════════════════════════════
+#  Federated Learning
+# ═══════════════════════════════════════════
+
+# 1. ثبت کلاینت
+curl -X POST http://localhost:3001/api/fl/register \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"fingerprint":"abc123..."}'
+
+# 2. ادمین round جدید شروع کن
+curl -X POST http://localhost:3001/api/fl/admin/start-round \
+  -H "Authorization: Bearer <ADMIN>"
+
+# 3. کلاینتها weights میفرستن (خودکار از هوک انجام میشه)
+
+# 4. تجمیع
+curl -X POST http://localhost:3001/api/fl/admin/aggregate/<roundId> \
+  -H "Authorization: Bearer <ADMIN>"
+# → { newVersion: 5, participants: 12 }
+
+# ═══════════════════════════════════════════
+#  Reinforcement Learning
+# ═══════════════════════════════════════════
+
+# 1. آمار
+curl http://localhost:3001/api/rl/stats \
+  -H "Authorization: Bearer <ADMIN>" | jq
+
+# 2. تصمیمات اخیر
+curl "http://localhost:3001/api/rl/decisions?limit=20" \
+  -H "Authorization: Bearer <ADMIN>" | jq
+
+# 3. یادگیری از auto-rewards
+curl -X POST http://localhost:3001/api/rl/learn-pending \
+  -H "Authorization: Bearer <ADMIN>"
+
+# 4. Snapshot
+curl -X POST http://localhost:3001/api/rl/snapshot \
+  -H "Authorization: Bearer <ADMIN>"
+
+# 5. فعالسازی (خروج از shadow)
+curl -X POST http://localhost:3001/api/rl/activate/<snapshotId> \
+  -H "Authorization: Bearer <ADMIN>"
+```
+
+---
+
+✅ خلاصه ویژگیها
+
+🤝 Federated Learning
+
+ویژگی توضیح
+🔒 Privacy by Design داده خام هرگز از مرورگر خارج نمیشه
+📊 FedAvg الگوریتم استاندارد McMahan et al.
+🛡️ FedProx / Median مقاوم به Byzantine attacks
+🔐 Differential Privacy Gradient clipping + Gaussian noise
+🔢 Privacy Budget محاسبه ε مصرفشده
+🤐 Secure Aggregation Shamir Secret Sharing
+🌐 IndexedDB محلی ذخیره داده در کلاینت
+⚙️ TF.js در مرورگر آموزش کامل سمت کلاینت
+📱 Opt-in/Opt-out کاربر کنترل کامل داره
+🔄 Round Management خودکار هر ساعت
+
+🎰 Reinforcement Learning
+
+ویژگی توضیح
+🧠 LinUCB Contextual bandit با UCB
+📊 Q-Learning Tabular با discretization
+🎯 12-dim Context ترکیب trust + threat + behavior
+💰 Auto Reward بر اساس نتیجه واقعی
+👁️ Shadow Mode یادگیری بدون اعمال
+📸 Snapshots نسخهبندی سیاست
+🎓 Batch Learning یادگیری از event های گذشته
+🎛️ Adaptive PDP جایگزین هوشمند سیاستهای ثابت
+
+معماری نهایی (12 لایه امنیتی):
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  L1-L11: (لایههای قبلی)                                   │
+│  L12: FEDERATED LEARNING (Global Model Update)             │ ← جدید
+│  L13: RL POLICY (Adaptive Decision)                        │ ← جدید
+└────────────────────────────────────────────────────────────┘
+```
+
+چرخه یادگیری:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Client → Local ML Model → Local Train → Weights (DP)    │
+│              ↓                                            │
+│  Server ← FedAvg Aggregation ← Global Model              │
+│              ↓                                            │
+│  Context + Action → RL Decision → Reward → Update        │
+│              ↓                                            │
+│  Better Policy → Better Decisions → Less Friction        │
+└──────────────────────────────────────────────────────────┘
+```
