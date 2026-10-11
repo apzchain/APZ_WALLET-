@@ -1,0 +1,1526 @@
+
+---
+
+📦 نصب پکیج‌های جدید
+
+```bash
+npm install passport passport-google-oauth20 passport-github2 otplib qrcode
+npm install -D @types/passport @types/passport-google-oauth20 @types/passport-github2 @types/qrcode
+```
+
+---
+
+🗂️ ساختار اضافه‌شده
+
+```text
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── oauth.config.ts            ← جدید
+│   ├── services/
+│   │   ├── oauth.service.ts           ← جدید
+│   │   └── totp.service.ts            ← جدید
+│   ├── middleware/
+│   │   └── passport.middleware.ts     ← جدید
+│   └── routes/
+│       ├── oauth.routes.ts            ← جدید
+│       └── twofa.routes.ts            ← جدید
+└── src/
+    ├── components/
+    │   ├── OAuthButtons.tsx           ← جدید
+    │   ├── TwoFactorSetup.tsx         ← جدید
+    │   └── TwoFactorVerify.tsx        ← جدید
+    └── auth/
+        └── AuthContext.tsx            ← به‌روزرسانی
+```
+
+---
+
+⚙️ .env.example — اضافه کن
+
+```env
+# ───── Google OAuth ─────
+GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+GOOGLE_CALLBACK_URL=http://localhost:3001/api/auth/oauth/google/callback
+
+# ───── GitHub OAuth ─────
+GITHUB_CLIENT_ID=your-github-client-id
+GITHUB_CLIENT_SECRET=your-github-client-secret
+GITHUB_CALLBACK_URL=http://localhost:3001/api/auth/oauth/github/callback
+
+# ───── Frontend URL ─────
+CLIENT_URL=http://localhost:5173
+
+# ───── 2FA ─────
+TOTP_ISSUER=APZ-Wallet
+```
+
+🔧 برای گرفتن کلیدها:
+
+· Google: https://console.cloud.google.com → APIs & Services → Credentials
+· GitHub: https://github.com/settings/developers → New OAuth App
+
+---
+
+⚙️ server/config/oauth.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const OAUTH_CONFIG = {
+  google: {
+    clientID: process.env.GOOGLE_CLIENT_ID || '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+    callbackURL: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3001/api/auth/oauth/google/callback',
+    scope: ['profile', 'email']
+  },
+  github: {
+    clientID: process.env.GITHUB_CLIENT_ID || '',
+    clientSecret: process.env.GITHUB_CLIENT_SECRET || '',
+    callbackURL: process.env.GITHUB_CALLBACK_URL || 'http://localhost:3001/api/auth/oauth/github/callback',
+    scope: ['user:email']
+  },
+  clientUrl: process.env.CLIENT_URL || 'http://localhost:5173'
+};
+
+export const TOTP_CONFIG = {
+  issuer: process.env.TOTP_ISSUER || 'APZ-Wallet',
+  algorithm: 'sha1' as const,
+  digits: 6,
+  period: 30,
+  window: 1 // 30s tolerance
+};
+```
+
+---
+
+🗄️ به‌روزرسانی server/services/db.service.ts
+
+این جداول و ستون‌ها رو به db.exec() اضافه کن:
+
+```typescript
+db.exec(`
+  -- ───── OAuth Accounts ─────
+  CREATE TABLE IF NOT EXISTS oauth_accounts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    provider TEXT NOT NULL,          -- 'google' | 'github'
+    provider_user_id TEXT NOT NULL,
+    email TEXT,
+    display_name TEXT,
+    avatar_url TEXT,
+    access_token TEXT,
+    refresh_token TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(provider, provider_user_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_oauth_user ON oauth_accounts(user_id);
+  CREATE INDEX IF NOT EXISTS idx_oauth_provider ON oauth_accounts(provider, provider_user_id);
+
+  -- ───── 2FA (TOTP) ─────
+  CREATE TABLE IF NOT EXISTS user_2fa (
+    user_id TEXT PRIMARY KEY,
+    secret_encrypted TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    backup_codes TEXT,                 -- JSON array of hashed codes
+    verified_at INTEGER,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+`);
+
+// ───── اضافه شدن ستون‌های جدید به users (اگر قبلاً نبود) ─────
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER NOT NULL DEFAULT 0;`);
+} catch {}
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN avatar_url TEXT;`);
+} catch {}
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN oauth_provider TEXT;`);
+} catch {}
+```
+
+---
+
+👤 به‌روزرسانی server/models/User.model.ts
+
+```typescript
+export interface OAuthAccountRow {
+  id: string;
+  user_id: string;
+  provider: string;
+  provider_user_id: string;
+  email: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  access_token: string | null;
+  refresh_token: string | null;
+  created_at: number;
+}
+
+export interface TwoFARow {
+  user_id: string;
+  secret_encrypted: string;
+  enabled: number;
+  backup_codes: string | null;
+  verified_at: number | null;
+  created_at: number;
+}
+
+export const userModel = {
+  // ... توابع قبلی ...
+
+  // ───── OAuth ─────
+  findOAuthAccount(provider: string, providerUserId: string): OAuthAccountRow | undefined {
+    return db.prepare('SELECT * FROM oauth_accounts WHERE provider = ? AND provider_user_id = ?')
+      .get(provider, providerUserId) as OAuthAccountRow | undefined;
+  },
+
+  linkOAuthAccount(row: OAuthAccountRow): void {
+    db.prepare(`
+      INSERT INTO oauth_accounts 
+        (id, user_id, provider, provider_user_id, email, display_name, avatar_url, access_token, refresh_token, created_at)
+      VALUES 
+        (@id, @user_id, @provider, @provider_user_id, @email, @display_name, @avatar_url, @access_token, @refresh_token, @created_at)
+    `).run(row);
+  },
+
+  getOAuthAccountsByUser(userId: string): OAuthAccountRow[] {
+    return db.prepare('SELECT * FROM oauth_accounts WHERE user_id = ?').all(userId) as OAuthAccountRow[];
+  },
+
+  updateUserAvatar(userId: string, avatarUrl: string): void {
+    db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(avatarUrl, userId);
+  },
+
+  updateOAuthProvider(userId: string, provider: string): void {
+    db.prepare('UPDATE users SET oauth_provider = ? WHERE id = ?').run(provider, userId);
+  },
+
+  // ───── 2FA ─────
+  get2FA(userId: string): TwoFARow | undefined {
+    return db.prepare('SELECT * FROM user_2fa WHERE user_id = ?').get(userId) as TwoFARow | undefined;
+  },
+
+  upsert2FA(row: TwoFARow): void {
+    db.prepare(`
+      INSERT INTO user_2fa (user_id, secret_encrypted, enabled, backup_codes, verified_at, created_at)
+      VALUES (@user_id, @secret_encrypted, @enabled, @backup_codes, @verified_at, @created_at)
+      ON CONFLICT(user_id) DO UPDATE SET
+        secret_encrypted = excluded.secret_encrypted,
+        enabled = excluded.enabled,
+        backup_codes = excluded.backup_codes,
+        verified_at = excluded.verified_at
+    `).run(row);
+  },
+
+  enable2FA(userId: string, backupCodes: string): void {
+    db.prepare(`
+      UPDATE user_2fa 
+      SET enabled = 1, backup_codes = ?, verified_at = ?
+      WHERE user_id = ?
+    `).run(backupCodes, Date.now(), userId);
+
+    db.prepare('UPDATE users SET two_factor_enabled = 1 WHERE id = ?').run(userId);
+  },
+
+  disable2FA(userId: string): void {
+    db.prepare('DELETE FROM user_2fa WHERE user_id = ?').run(userId);
+    db.prepare('UPDATE users SET two_factor_enabled = 0 WHERE id = ?').run(userId);
+  },
+
+  updateBackupCodes(userId: string, codes: string): void {
+    db.prepare('UPDATE user_2fa SET backup_codes = ? WHERE user_id = ?').run(codes, userId);
+  }
+};
+```
+
+---
+
+🔐 server/services/totp.service.ts
+
+```typescript
+import { authenticator } from 'otplib';
+import QRCode from 'qrcode';
+import crypto from 'crypto';
+import { TOTP_CONFIG } from '../config/oauth.config.js';
+import { userModel } from '../models/User.model.js';
+
+// تنظیمات TOTP
+authenticator.options = {
+  digits: TOTP_CONFIG.digits,
+  step: TOTP_CONFIG.period,
+  window: TOTP_CONFIG.window
+};
+
+const ENCRYPTION_KEY = crypto
+  .createHash('sha256')
+  .update(process.env.JWT_ACCESS_SECRET || 'default-key')
+  .digest();
+
+/**
+ * رمزنگاری secret با AES-256-GCM
+ */
+function encrypt(text: string): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  const enc = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${tag.toString('hex')}:${enc.toString('hex')}`;
+}
+
+function decrypt(payload: string): string {
+  const [ivHex, tagHex, encHex] = payload.split(':');
+  const iv = Buffer.from(ivHex, 'hex');
+  const tag = Buffer.from(tagHex, 'hex');
+  const enc = Buffer.from(encHex, 'hex');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+}
+
+export class TotpService {
+  /**
+   * راه‌اندازی اولیه: تولید secret + QR code
+   * (هنوز enabled نیست تا کاربر اولین کد رو تأیید کنه)
+   */
+  async setup(userId: string, email: string) {
+    const existing = userModel.get2FA(userId);
+    if (existing?.enabled) {
+      throw Object.assign(new Error('2FA already enabled'), { status: 409 });
+    }
+
+    const secret = authenticator.generateSecret();
+    const otpauthUrl = authenticator.keyuri(email, TOTP_CONFIG.issuer, secret);
+    const qrDataUrl = await QRCode.toDataURL(otpauthUrl);
+
+    userModel.upsert2FA({
+      user_id: userId,
+      secret_encrypted: encrypt(secret),
+      enabled: 0,
+      backup_codes: null,
+      verified_at: null,
+      created_at: Date.now()
+    });
+
+    return { secret, otpauthUrl, qrDataUrl };
+  }
+
+  /**
+   * تأیید اولین کد و فعال‌سازی نهایی + تولید backup codes
+   */
+  async verifyAndEnable(userId: string, code: string) {
+    const row = userModel.get2FA(userId);
+    if (!row) throw Object.assign(new Error('2FA not initialized'), { status: 400 });
+    if (row.enabled) throw Object.assign(new Error('2FA already enabled'), { status: 409 });
+
+    const secret = decrypt(row.secret_encrypted);
+    if (!authenticator.check(code, secret)) {
+      throw Object.assign(new Error('Invalid code'), { status: 400 });
+    }
+
+    // تولید ۱۰ backup code
+    const rawBackupCodes = Array.from({ length: 10 }, () =>
+      crypto.randomBytes(5).toString('hex').toUpperCase()
+    );
+    const hashedCodes = rawBackupCodes.map(c =>
+      crypto.createHash('sha256').update(c).digest('hex')
+    );
+
+    userModel.enable2FA(userId, JSON.stringify(hashedCodes));
+
+    return { backupCodes: rawBackupCodes };
+  }
+
+  /**
+   * چک کردن کد TOTP هنگام ورود
+   */
+  verifyCode(userId: string, code: string): boolean {
+    const row = userModel.get2FA(userId);
+    if (!row?.enabled) return false;
+
+    const secret = decrypt(row.secret_encrypted);
+
+    // اول به‌عنوان TOTP چک کن
+    if (authenticator.check(code, secret)) return true;
+
+    // بعد به‌عنوان backup code
+    return this.consumeBackupCode(userId, code);
+  }
+
+  /**
+   * مصرف backup code (یک‌بار‌مصرف)
+   */
+  private consumeBackupCode(userId: string, code: string): boolean {
+    const row = userModel.get2FA(userId);
+    if (!row?.backup_codes) return false;
+
+    const hash = crypto.createHash('sha256').update(code.toUpperCase()).digest('hex');
+    const codes: string[] = JSON.parse(row.backup_codes);
+    const idx = codes.indexOf(hash);
+
+    if (idx === -1) return false;
+
+    codes.splice(idx, 1); // حذف code مصرف‌شده
+    userModel.updateBackupCodes(userId, JSON.stringify(codes));
+    return true;
+  }
+
+  /**
+   * غیرفعال‌سازی 2FA (نیاز به رمز عبور یا کد معتبر)
+   */
+  async disable(userId: string, code: string) {
+    const row = userModel.get2FA(userId);
+    if (!row?.enabled) throw Object.assign(new Error('2FA not enabled'), { status: 400 });
+
+    const secret = decrypt(row.secret_encrypted);
+    const valid = authenticator.check(code, secret) || this.consumeBackupCode(userId, code);
+    if (!valid) throw Object.assign(new Error('Invalid code'), { status: 400 });
+
+    userModel.disable2FA(userId);
+  }
+
+  isEnabled(userId: string): boolean {
+    return userModel.get2FA(userId)?.enabled === 1;
+  }
+}
+
+export const totpService = new TotpService();
+```
+
+---
+
+🔗 server/services/oauth.service.ts
+
+```typescript
+import crypto from 'crypto';
+import { userModel, UserRow } from '../models/User.model.js';
+import { authService } from './auth.service.js';
+
+export interface OAuthProfile {
+  provider: 'google' | 'github';
+  providerUserId: string;
+  email: string;
+  displayName?: string;
+  avatarUrl?: string;
+  accessToken?: string;
+  refreshToken?: string;
+}
+
+export class OAuthService {
+  /**
+   * پیدا کردن یا ساختن کاربر بر اساس پروفایل OAuth
+   */
+  async findOrCreateUser(profile: OAuthProfile): Promise<UserRow> {
+    // 1. آیا این OAuth account قبلاً لینک شده؟
+    const existingLink = userModel.findOAuthAccount(profile.provider, profile.providerUserId);
+    if (existingLink) {
+      const user = userModel.findById(existingLink.user_id);
+      if (user) {
+        userModel.updateLastLogin(user.id);
+        return user;
+      }
+    }
+
+    // 2. آیا کاربری با این ایمیل وجود داره؟
+    let user = userModel.findByEmail(profile.email);
+
+    // 3. اگر نیست، بساز
+    if (!user) {
+      const id = crypto.randomUUID();
+      userModel.create({
+        id,
+        email: profile.email,
+        password_hash: 'OAUTH_NO_PASSWORD', // امکان ورود با رمز نداره
+        display_name: profile.displayName,
+        role: 'user'
+      });
+      user = userModel.findById(id)!;
+    }
+
+    // 4. آواتار
+    if (profile.avatarUrl && !user.avatar_url) {
+      userModel.updateUserAvatar(user.id, profile.avatarUrl);
+      user = userModel.findById(user.id)!;
+    }
+
+    // 5. لینک کردن OAuth account
+    userModel.linkOAuthAccount({
+      id: crypto.randomUUID(),
+      user_id: user.id,
+      provider: profile.provider,
+      provider_user_id: profile.providerUserId,
+      email: profile.email,
+      display_name: profile.displayName || null,
+      avatar_url: profile.avatarUrl || null,
+      access_token: profile.accessToken || null,
+      refresh_token: profile.refreshToken || null,
+      created_at: Date.now()
+    });
+
+    return user;
+  }
+
+  /**
+   * صدور توکن برای کاربر و برگرداندن redirect URL فرانت
+   */
+  async issueTokensForUser(user: UserRow) {
+    const tokens = await authService.issueTokens(user);
+    return tokens;
+  }
+}
+
+export const oauthService = new OAuthService();
+```
+
+---
+
+🛡️ server/middleware/passport.middleware.ts
+
+```typescript
+import passport from 'passport';
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+import { Strategy as GitHubStrategy } from 'passport-github2';
+import { OAUTH_CONFIG } from '../config/oauth.config.js';
+import { oauthService } from '../services/oauth.service.js';
+
+export function configurePassport() {
+  // ───── Google ─────
+  if (OAUTH_CONFIG.google.clientID && OAUTH_CONFIG.google.clientSecret) {
+    passport.use(new GoogleStrategy(
+      {
+        clientID: OAUTH_CONFIG.google.clientID,
+        clientSecret: OAUTH_CONFIG.google.clientSecret,
+        callbackURL: OAUTH_CONFIG.google.callbackURL
+      },
+      async (_accessToken, _refreshToken, profile, done) => {
+        try {
+          const email = profile.emails?.[0]?.value;
+          if (!email) return done(new Error('No email in Google profile'));
+
+          const user = await oauthService.findOrCreateUser({
+            provider: 'google',
+            providerUserId: profile.id,
+            email,
+            displayName: profile.displayName,
+            avatarUrl: profile.photos?.[0]?.value,
+            accessToken: _accessToken
+          });
+          done(null, user);
+        } catch (err) {
+          done(err as Error);
+        }
+      }
+    ));
+  }
+
+  // ───── GitHub ─────
+  if (OAUTH_CONFIG.github.clientID && OAUTH_CONFIG.github.clientSecret) {
+    passport.use(new GitHubStrategy(
+      {
+        clientID: OAUTH_CONFIG.github.clientID,
+        clientSecret: OAUTH_CONFIG.github.clientSecret,
+        callbackURL: OAUTH_CONFIG.github.callbackURL,
+        scope: ['user:email']
+      },
+      async (_accessToken: string, _refreshToken: string, profile: any, done: any) => {
+        try {
+          // GitHub ممکنه ایمیل رو مستقیم نده → از API بگیر
+          let email = profile.emails?.[0]?.value;
+          if (!email) {
+            const res = await fetch('https://api.github.com/user/emails', {
+              headers: { Authorization: `Bearer ${_accessToken}`, 'User-Agent': 'apz-wallet' }
+            });
+            const emails = await res.json();
+            email = emails.find((e: any) => e.primary)?.email || emails[0]?.email;
+          }
+          if (!email) return done(new Error('No email in GitHub profile'));
+
+          const user = await oauthService.findOrCreateUser({
+            provider: 'github',
+            providerUserId: profile.id,
+            email,
+            displayName: profile.displayName || profile.username,
+            avatarUrl: profile.photos?.[0]?.value,
+            accessToken: _accessToken
+          });
+          done(null, user);
+        } catch (err) {
+          done(err as Error);
+        }
+      }
+    ));
+  }
+
+  return passport;
+}
+```
+
+---
+
+🛣️ server/routes/oauth.routes.ts
+
+```typescript
+import { Router, Request, Response, NextFunction } from 'express';
+import passport from 'passport';
+import { OAUTH_CONFIG } from '../config/oauth.config.js';
+import { oauthService } from '../services/oauth.service.js';
+import { totpService } from '../services/totp.service.js';
+import { AUTH_CONFIG } from '../config/auth.config.js';
+import jwt from 'jsonwebtoken';
+
+const router = Router();
+
+/**
+ * بعد از موفقیت passport، این handler اجرا می‌شه.
+ * - اگر کاربر 2FA داره → یک mfa_token کوتاه‌عمر صادر می‌کنیم
+ * - وگرنه توکن کامل
+ */
+async function oauthCallbackHandler(req: Request, res: Response, next: NextFunction) {
+  try {
+    const user = req.user as any;
+    if (!user) throw new Error('OAuth failed');
+
+    const clientUrl = OAUTH_CONFIG.clientUrl;
+
+    // ───── اگر 2FA فعاله ─────
+    if (totpService.isEnabled(user.id)) {
+      const mfaToken = jwt.sign(
+        { sub: user.id, purpose: 'mfa' },
+        AUTH_CONFIG.accessTokenSecret,
+        { expiresIn: '5m' }
+      );
+      return res.redirect(`${clientUrl}/auth/mfa?token=${mfaToken}`);
+    }
+
+    // ───── صدور توکن کامل ─────
+    const { accessToken, refreshToken } = await oauthService.issueTokensForUser(user);
+
+    res.cookie('refreshToken', refreshToken, AUTH_CONFIG.cookieOptions);
+
+    // توکن رو از طریق fragment به فرانت بفرست (امن‌تر از query)
+    return res.redirect(
+      `${clientUrl}/auth/callback#access_token=${accessToken}`
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ───── Google ─────
+router.get('/google',
+  passport.authenticate('google', { session: false, scope: ['profile', 'email'] })
+);
+
+router.get('/google/callback',
+  passport.authenticate('google', { session: false, failureRedirect: `${OAUTH_CONFIG.clientUrl}/auth/error` }),
+  oauthCallbackHandler
+);
+
+// ───── GitHub ─────
+router.get('/github',
+  passport.authenticate('github', { session: false, scope: ['user:email'] })
+);
+
+router.get('/github/callback',
+  passport.authenticate('github', { session: false, failureRedirect: `${OAUTH_CONFIG.clientUrl}/auth/error` }),
+  oauthCallbackHandler
+);
+
+export default router;
+```
+
+---
+
+🛡️ server/routes/twofa.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import jwt from 'jsonwebtoken';
+import { requireAuth } from '../middleware/auth.middleware.js';
+import { totpService } from '../services/totp.service.js';
+import { authService } from '../services/auth.service.js';
+import { userModel } from '../models/User.model.js';
+import { AUTH_CONFIG } from '../config/auth.config.js';
+
+const router = Router();
+
+const codeSchema = z.object({ code: z.string().min(6).max(16) });
+
+// ───── POST /api/2fa/setup (requires auth) ─────
+router.post('/setup', requireAuth, async (req, res, next) => {
+  try {
+    const user = userModel.findById(req.user!.sub);
+    if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+    const result = await totpService.setup(user.id, user.email);
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ───── POST /api/2fa/verify (requires auth) ─────
+router.post('/verify', requireAuth, async (req, res, next) => {
+  try {
+    const { code } = codeSchema.parse(req.body);
+    const result = await totpService.verifyAndEnable(req.user!.sub, code);
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ───── POST /api/2fa/disable (requires auth) ─────
+router.post('/disable', requireAuth, async (req, res, next) => {
+  try {
+    const { code } = codeSchema.parse(req.body);
+    await totpService.disable(req.user!.sub, code);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ───── GET /api/2fa/status ─────
+router.get('/status', requireAuth, (req, res) => {
+  const enabled = totpService.isEnabled(req.user!.sub);
+  res.json({ success: true, data: { enabled } });
+});
+
+// ───── POST /api/2fa/challenge (بدون auth، با mfa_token) ─────
+// این روت برای وقتیه که کاربر با OAuth لاگین کرده و 2FA فعال داره
+router.post('/challenge', async (req, res, next) => {
+  try {
+    const schema = z.object({
+      mfaToken: z.string(),
+      code: z.string().min(6).max(16)
+    });
+    const { mfaToken, code } = schema.parse(req.body);
+
+    // verify mfa_token
+    let payload: any;
+    try {
+      payload = jwt.verify(mfaToken, AUTH_CONFIG.accessTokenSecret);
+    } catch {
+      throw Object.assign(new Error('Invalid or expired MFA token'), { status: 401 });
+    }
+    if (payload.purpose !== 'mfa') {
+      throw Object.assign(new Error('Invalid token purpose'), { status: 401 });
+    }
+
+    const user = userModel.findById(payload.sub);
+    if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+
+    if (!totpService.verifyCode(user.id, code)) {
+      throw Object.assign(new Error('Invalid 2FA code'), { status: 401 });
+    }
+
+    const { accessToken, refreshToken } = await authService.issueTokens(user);
+    res.cookie('refreshToken', refreshToken, AUTH_CONFIG.cookieOptions);
+    res.json({ success: true, data: { accessToken } });
+  } catch (err) { next(err); }
+});
+
+export default router;
+```
+
+---
+
+🔄 به‌روزرسانی server/services/auth.service.ts — پشتیبانی از 2FA در Login
+
+متد login رو این‌طور تغییر بده:
+
+```typescript
+import { totpService } from './totp.service.js';
+import jwt from 'jsonwebtoken';
+
+// داخل کلاس AuthService:
+
+async login(params: {
+  email: string;
+  password: string;
+  userAgent?: string;
+  ipAddress?: string;
+  totpCode?: string;   // ← جدید
+}) {
+  const user = userModel.findByEmail(params.email);
+  if (!user || !user.is_active) {
+    throw Object.assign(new Error('Invalid credentials'), { status: 401 });
+  }
+
+  const ok = await this.verifyPassword(user.password_hash, params.password);
+  if (!ok) throw Object.assign(new Error('Invalid credentials'), { status: 401 });
+
+  // ───── چک 2FA ─────
+  if (totpService.isEnabled(user.id)) {
+    if (!params.totpCode) {
+      // توکن موقت برای مرحله بعد
+      const mfaToken = jwt.sign(
+        { sub: user.id, purpose: 'mfa' },
+        AUTH_CONFIG.accessTokenSecret,
+        { expiresIn: '5m' }
+      );
+      throw Object.assign(
+        new Error('2FA required'),
+        { status: 401, code: 'MFA_REQUIRED', mfaToken }
+      );
+    }
+
+    if (!totpService.verifyCode(user.id, params.totpCode)) {
+      throw Object.assign(
+        new Error('Invalid 2FA code'),
+        { status: 401, code: 'MFA_INVALID' }
+      );
+    }
+  }
+
+  userModel.updateLastLogin(user.id);
+  const tokens = await this.issueTokens(user, params.userAgent, params.ipAddress);
+
+  return { user: this.sanitize(user), ...tokens };
+}
+```
+
+و در server/middleware/errorHandler.ts این رو اضافه کن:
+
+```typescript
+export function errorHandler(err: any, _req: Request, res: Response, _next: NextFunction) {
+  console.error('[Error]', err);
+
+  // مخصوص خطاهای 2FA
+  if (err.code === 'MFA_REQUIRED') {
+    return res.status(401).json({
+      success: false,
+      code: 'MFA_REQUIRED',
+      mfaToken: err.mfaToken,
+      error: err.message
+    });
+  }
+  if (err.code === 'MFA_INVALID') {
+    return res.status(401).json({
+      success: false,
+      code: 'MFA_INVALID',
+      error: err.message
+    });
+  }
+
+  res.status(err.status || 500).json({
+    success: false,
+    error: err.message || 'Internal Server Error'
+  });
+}
+```
+
+---
+
+🖥️ به‌روزرسانی server/index.ts
+
+```typescript
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import dotenv from 'dotenv';
+import { configurePassport } from './middleware/passport.middleware.js';
+import authRoutes from './routes/auth.routes.js';
+import oauthRoutes from './routes/oauth.routes.js';
+import twofaRoutes from './routes/twofa.routes.js';
+import walletRoutes from './routes/wallet.routes.js';
+import txRoutes from './routes/transaction.routes.js';
+import { errorHandler } from './middleware/errorHandler.js';
+import { requireAuth } from './middleware/auth.middleware.js';
+
+dotenv.config();
+
+const app = express();
+configurePassport();
+
+app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173', credentials: true }));
+app.use(express.json());
+app.use(cookieParser());
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', service: 'APZ Wallet API', time: Date.now() });
+});
+
+// عمومی
+app.use('/api/auth', authRoutes);
+app.use('/api/auth/oauth', oauthRoutes);       // ← جدید
+app.use('/api/2fa', twofaRoutes);             // ← جدید (setup/verify نیاز به auth داخل خودش چک میشه)
+
+// محافظت‌شده
+app.use('/api/wallet', requireAuth, walletRoutes);
+app.use('/api/tx', requireAuth, txRoutes);
+
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`🚀 APZ Wallet API on http://localhost:${PORT}`);
+});
+```
+
+---
+
+🌐 به‌روزرسانی src/api/client.ts — متدهای جدید
+
+```typescript
+export const apiClient = {
+  // ... قبلی ...
+
+  // ───── OAuth ─────
+  startGoogleOAuth: () => {
+    window.location.href = `${API_BASE}/auth/oauth/google`;
+  },
+  startGithubOAuth: () => {
+    window.location.href = `${API_BASE}/auth/oauth/github`;
+  },
+
+  // ───── 2FA ─────
+  twoFactorStatus: () =>
+    request<{ enabled: boolean }>('/2fa/status'),
+
+  twoFactorSetup: () =>
+    request<{ secret: string; otpauthUrl: string; qrDataUrl: string }>('/2fa/setup', {
+      method: 'POST'
+    }),
+
+  twoFactorVerify: (code: string) =>
+    request<{ backupCodes: string[] }>('/2fa/verify', {
+      method: 'POST',
+      body: JSON.stringify({ code })
+    }),
+
+  twoFactorDisable: (code: string) =>
+    request<{}>('/2fa/disable', {
+      method: 'POST',
+      body: JSON.stringify({ code })
+    }),
+
+  twoFactorChallenge: (mfaToken: string, code: string) =>
+    request<{ accessToken: string }>('/2fa/challenge', {
+      method: 'POST',
+      body: JSON.stringify({ mfaToken, code })
+    })
+};
+```
+
+و در login متد نیاز به تغییر کوچک برای پشتیبانی از totpCode:
+
+```typescript
+login: (payload: { email: string; password: string; totpCode?: string }) =>
+  request<{ user: any; accessToken: string }>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }),
+```
+
+---
+
+🧩 src/components/OAuthButtons.tsx
+
+```tsx
+import React from 'react';
+import { apiClient } from '../api/client';
+
+export const OAuthButtons: React.FC = () => {
+  return (
+    <div className="oauth-buttons">
+      <div className="oauth-divider">
+        <span>یا با</span>
+      </div>
+      <button
+        type="button"
+        className="oauth-btn google"
+        onClick={() => apiClient.startGoogleOAuth()}
+      >
+        <svg width="20" height="20" viewBox="0 0 48 48">
+          <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.2-.1-2.4-.4-3.5z"/>
+          <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+          <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2c-2 1.5-4.5 2.4-7.2 2.4-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
+          <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.1 5.6l6.2 5.2C36.9 39.1 44 34 44 24c0-1.2-.1-2.4-.4-3.5z"/>
+        </svg>
+        ورود با Google
+      </button>
+
+      <button
+        type="button"
+        className="oauth-btn github"
+        onClick={() => apiClient.startGithubOAuth()}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.2 1.9 1.2 1.1 1.9 2.9 1.3 3.6 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6a4.7 4.7 0 0 1 1.3-3.3c-.1-.3-.6-1.6.1-3.3 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.2 3 .1 3.3a4.7 4.7 0 0 1 1.3 3.3c0 4.7-2.9 5.7-5.6 6 .4.4.8 1 .8 2.1v3.1c0 .3.2.7.8.6A12 12 0 0 0 12 .3z"/>
+        </svg>
+        ورود با GitHub
+      </button>
+    </div>
+  );
+};
+```
+
+و در LoginForm.tsx این کامپوننت رو اضافه کن (بعد از فرم):
+
+```tsx
+import { OAuthButtons } from './OAuthButtons';
+
+// ...
+
+return (
+  <div className="auth-card">
+    <h2>🔐 ورود به APZ Wallet</h2>
+    {/* ... فرم قبلی ... */}
+    <OAuthButtons />
+    {/* ... دکمه switch ... */}
+  </div>
+);
+```
+
+---
+
+🧩 src/components/TwoFactorSetup.tsx
+
+```tsx
+import React, { useState } from 'react';
+import { apiClient } from '../api/client';
+
+export const TwoFactorSetup: React.FC<{ onDone: () => void }> = ({ onDone }) => {
+  const [step, setStep] = useState<'intro' | 'scan' | 'verify' | 'backup'>('intro');
+  const [qrDataUrl, setQrDataUrl] = useState('');
+  const [secret, setSecret] = useState('');
+  const [code, setCode] = useState('');
+  const [backupCodes, setBackupCodes] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const startSetup = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await apiClient.twoFactorSetup();
+      setQrDataUrl(res.qrDataUrl);
+      setSecret(res.secret);
+      setStep('scan');
+    } catch (e: any) {
+      setError(e.message);
+    } finally { setBusy(false); }
+  };
+
+  const verify = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await apiClient.twoFactorVerify(code);
+      setBackupCodes(res.backupCodes);
+      setStep('backup');
+    } catch (e: any) {
+      setError(e.message);
+    } finally { setBusy(false); }
+  };
+
+  const copyBackupCodes = () => {
+    navigator.clipboard.writeText(backupCodes.join('\n'));
+    alert('کدهای پشتیبان کپی شدند ✅');
+  };
+
+  return (
+    <div className="twofa-card">
+      <h3>🔒 فعال‌سازی احراز هویت دو مرحله‌ای</h3>
+
+      {step === 'intro' && (
+        <>
+          <p>با فعال‌سازی 2FA، هنگام ورود علاوه بر رمز عبور به یک کد ۶ رقمی از اپ Authenticator نیاز داری.</p>
+          <button className="btn-primary" onClick={startSetup} disabled={busy}>
+            شروع تنظیم
+          </button>
+        </>
+      )}
+
+      {step === 'scan' && (
+        <>
+          <p>با اپ Google Authenticator یا Authy این QR رو اسکن کن:</p>
+          <img src={qrDataUrl} alt="QR" className="qr-img" />
+          <details>
+            <summary>نمایش کد دستی</summary>
+            <code className="secret-code">{secret}</code>
+          </details>
+          <button className="btn-primary" onClick={() => setStep('verify')}>
+            بعدی
+          </button>
+        </>
+      )}
+
+      {step === 'verify' && (
+        <>
+          <p>کد ۶ رقمی نمایش داده‌شده در اپ رو وارد کن:</p>
+          <input
+            className="totp-input"
+            value={code}
+            onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            placeholder="000000"
+            inputMode="numeric"
+            dir="ltr"
+          />
+          {error && <div className="auth-error">⚠️ {error}</div>}
+          <button className="btn-primary" onClick={verify} disabled={busy || code.length !== 6}>
+            تأیید و فعال‌سازی
+          </button>
+        </>
+      )}
+
+      {step === 'backup' && (
+        <>
+          <h4>✅ 2FA فعال شد!</h4>
+          <p>این کدهای پشتیبان رو در جای امنی ذخیره کن — اگر گوشیت گم شد فقط با این‌ها می‌تونی وارد شی.</p>
+          <div className="backup-codes">
+            {backupCodes.map((c, i) => <code key={i}>{c}</code>)}
+          </div>
+          <div className="btn-row">
+            <button className="btn-secondary" onClick={copyBackupCodes}>کپی کدها</button>
+            <button className="btn-primary" onClick={onDone}>تمام</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+```
+
+---
+
+🧩 src/components/TwoFactorVerify.tsx (برای ورود)
+
+```tsx
+import React, { useState } from 'react';
+
+interface Props {
+  onSubmit: (code: string) => Promise<void>;
+  onCancel?: () => void;
+}
+
+export const TwoFactorVerify: React.FC<Props> = ({ onSubmit, onCancel }) => {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const handle = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await onSubmit(code.trim());
+    } catch (err: any) {
+      setError(err.message || 'Invalid code');
+      setCode('');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="auth-card">
+      <h2>🔐 کد دو مرحله‌ای</h2>
+      <p>کد ۶ رقمی از اپ Authenticator یا یکی از کدهای پشتیبان رو وارد کن:</p>
+      <form onSubmit={handle}>
+        <input
+          className="totp-input"
+          value={code}
+          onChange={e => setCode(e.target.value.trim())}
+          placeholder="000000 یا BACKUP-CODE"
+          autoFocus
+          dir="ltr"
+        />
+        {error && <div className="auth-error">⚠️ {error}</div>}
+        <button className="btn-primary" disabled={busy || code.length < 6}>
+          تأیید
+        </button>
+        {onCancel && (
+          <button type="button" className="link-btn" onClick={onCancel}>
+            بازگشت
+          </button>
+        )}
+      </form>
+    </div>
+  );
+};
+```
+
+---
+
+🎯 به‌روزرسانی src/auth/AuthContext.tsx — پشتیبانی از 2FA
+
+```tsx
+// اضافه کن به interface:
+interface AuthContextValue {
+  user: AuthUser | null;
+  loading: boolean;
+  pendingMfaToken: string | null;   // ← جدید
+  login: (email: string, password: string, totpCode?: string) => Promise<void>;
+  completeMfaLogin: (code: string) => Promise<void>;  // ← جدید
+  register: (email: string, password: string, displayName?: string) => Promise<void>;
+  logout: () => Promise<void>;
+  logoutAll: () => Promise<void>;
+  setSessionFromOAuth: (accessToken: string) => Promise<void>;  // ← جدید
+}
+
+// داخل Provider:
+const [pendingMfaToken, setPendingMfaToken] = useState<string | null>(null);
+
+const login = useCallback(async (email: string, password: string, totpCode?: string) => {
+  try {
+    const { user, accessToken } = await apiClient.login({ email, password, totpCode });
+    setAccessToken(accessToken);
+    tokenStorage.setAccess(accessToken);
+    setUser(user);
+    setPendingMfaToken(null);
+  } catch (err: any) {
+    // اگر سرور MFA_REQUIRED برگردوند
+    const mfaToken = (err as any).mfaToken || (err as any).data?.mfaToken;
+    if (mfaToken) {
+      setPendingMfaToken(mfaToken);
+      throw Object.assign(new Error('MFA required'), { mfaRequired: true });
+    }
+    throw err;
+  }
+}, []);
+
+const completeMfaLogin = useCallback(async (code: string) => {
+  if (!pendingMfaToken) throw new Error('No pending MFA challenge');
+  const { accessToken } = await apiClient.twoFactorChallenge(pendingMfaToken, code);
+  setAccessToken(accessToken);
+  tokenStorage.setAccess(accessToken);
+  // حالا /me رو صدا بزن تا کاربر رو بگیری
+  const { user } = await apiClient.me();
+  setUser(user);
+  setPendingMfaToken(null);
+}, [pendingMfaToken]);
+
+// اضافه کن به Provider value:
+// pendingMfaToken, completeMfaLogin, setSessionFromOAuth
+```
+
+⚠️ برای اینکه mfaToken از خطا در دسترس باشه، در client.ts این تغییر رو بده:
+
+```typescript
+const data = await res.json();
+if (!res.ok || !data.success) {
+  const err: any = new Error(data.error || 'API error');
+  err.code = data.code;
+  err.mfaToken = data.mfaToken;
+  throw err;
+}
+```
+
+و setSessionFromOAuth:
+
+```typescript
+const setSessionFromOAuth = useCallback(async (accessToken: string) => {
+  setAccessToken(accessToken);
+  tokenStorage.setAccess(accessToken);
+  const { user } = await apiClient.me();
+  setUser(user);
+}, []);
+```
+
+---
+
+🛣️ روت‌های OAuth Callback در فرانت
+
+فایل src/main.tsx رو با route ساده آپدیت کن (بدون React Router):
+
+```tsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import { OAuthCallback } from './components/OAuthCallback';
+import { MfaChallenge } from './components/MfaChallenge';
+import './styles/globals.css';
+
+const path = window.location.pathname;
+
+let root;
+if (path === '/auth/callback') {
+  root = <OAuthCallback />;
+} else if (path === '/auth/mfa') {
+  root = <MfaChallenge />;
+} else {
+  root = <App />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')!).render(root);
+```
+
+و src/components/OAuthCallback.tsx:
+
+```tsx
+import React, { useEffect } from 'react';
+import { AuthProvider, useAuthContext } from '../auth/AuthContext';
+
+const Inner: React.FC = () => {
+  const { setSessionFromOAuth } = useAuthContext();
+
+  useEffect(() => {
+    const hash = window.location.hash.slice(1);
+    const params = new URLSearchParams(hash);
+    const accessToken = params.get('access_token');
+    if (!accessToken) {
+      window.location.href = '/?error=oauth_failed';
+      return;
+    }
+    setSessionFromOAuth(accessToken)
+      .then(() => { window.location.href = '/'; })
+      .catch(() => { window.location.href = '/?error=oauth_failed'; });
+  }, [setSessionFromOAuth]);
+
+  return <div className="loading-screen">⏳ در حال ورود…</div>;
+};
+
+export const OAuthCallback: React.FC = () => (
+  <AuthProvider><Inner /></AuthProvider>
+);
+```
+
+و src/components/MfaChallenge.tsx:
+
+```tsx
+import React from 'react';
+import { AuthProvider, useAuthContext } from '../auth/AuthContext';
+import { TwoFactorVerify } from './TwoFactorVerify';
+
+const Inner: React.FC = () => {
+  const { completeMfaLogin } = useAuthContext();
+
+  // mfaToken از URL
+  const params = new URLSearchParams(window.location.search);
+  const mfaToken = params.get('token') || '';
+  if (!mfaToken) {
+    window.location.href = '/?error=no_mfa_token';
+    return null;
+  }
+
+  // ذخیره در state به‌صورت موقت
+  (window as any).__MFA_TOKEN__ = mfaToken;
+
+  const handle = async (code: string) => {
+    // اینجا مستقیم از apiClient استفاده کن چون pendingMfaToken خالی است
+    const { apiClient } = await import('../api/client');
+    const { accessToken } = await apiClient.twoFactorChallenge(mfaToken, code);
+    const { tokenStorage } = await import('../auth/tokenStorage');
+    tokenStorage.setAccess(accessToken);
+    const { setAccessToken } = await import('../api/client');
+    setAccessToken(accessToken);
+    window.location.href = '/';
+  };
+
+  return <TwoFactorVerify onSubmit={handle} />;
+};
+
+export const MfaChallenge: React.FC = () => (
+  <AuthProvider><Inner /></AuthProvider>
+);
+```
+
+---
+
+🎨 استایل‌های اضافی برای globals.css
+
+```css
+.oauth-buttons { margin-top: 20px; }
+.oauth-divider {
+  text-align: center;
+  position: relative;
+  margin: 20px 0;
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+.oauth-divider::before,
+.oauth-divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 40%;
+  height: 1px;
+  background: #2a2f3d;
+}
+.oauth-divider::before { left: 0; }
+.oauth-divider::after { right: 0; }
+
+.oauth-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 11px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  border: 1px solid #2a2f3d;
+  background: #0d0f14;
+  color: #e7e9ee;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s, border 0.2s;
+}
+.oauth-btn:hover { background: #1a1d26; border-color: #3a4155; }
+
+.twofa-card {
+  max-width: 520px;
+  margin: 40px auto;
+  padding: 28px;
+  background: #14161c;
+  border-radius: 16px;
+  border: 1px solid #232733;
+  direction: rtl;
+  text-align: center;
+}
+.qr-img {
+  margin: 20px auto;
+  background: #fff;
+  padding: 16px;
+  border-radius: 12px;
+  width: 220px;
+  height: 220px;
+}
+.secret-code {
+  display: block;
+  margin: 10px 0;
+  padding: 10px;
+  background: #0d0f14;
+  border-radius: 8px;
+  font-family: monospace;
+  word-break: break-all;
+  color: #8a5cff;
+}
+.totp-input {
+  width: 100%;
+  padding: 14px;
+  font-size: 1.4rem;
+  text-align: center;
+  letter-spacing: 6px;
+  font-family: monospace;
+  background: #0d0f14;
+  border: 1px solid #2a2f3d;
+  border-radius: 10px;
+  color: #fff;
+  margin: 12px 0;
+}
+.backup-codes {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 20px 0;
+  padding: 16px;
+  background: #0d0f14;
+  border-radius: 10px;
+}
+.backup-codes code {
+  padding: 8px;
+  background: #1a1d26;
+  border-radius: 6px;
+  font-family: monospace;
+  color: #6c7cff;
+}
+.btn-secondary, .btn-danger {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.btn-secondary { background: #2a2f3d; color: #e7e9ee; }
+.btn-danger { background: #7f1d1d; color: #fff; }
+.btn-row { display: flex; gap: 10px; justify-content: center; }
+
+.user-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+```
+
+---
+
+🔄 متد login در فرانت باید pending MFA رو هندل کنه
+
+در LoginForm.tsx:
+
+```tsx
+const { login, pendingMfaToken, completeMfaLogin } = useAuth();
+const [needMfa, setNeedMfa] = useState(false);
+
+// ...
+
+const onSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError(null);
+  setBusy(true);
+  try {
+    await login(email.trim().toLowerCase(), password);
+  } catch (err: any) {
+    if (err.mfaRequired) {
+      setNeedMfa(true);   // نمایش فرم TwoFactorVerify
+    } else {
+      setError(err.message || 'Login failed');
+    }
+  } finally {
+    setBusy(false);
+  }
+};
+
+if (needMfa) {
+  return <TwoFactorVerify onSubmit={completeMfaLogin} onCancel={() => setNeedMfa(false)} />;
+}
+```
+
+---
+
+🧪 تست سریع
+
+OAuth
+
+```
+http://localhost:3001/api/auth/oauth/google
+http://localhost:3001/api/auth/oauth/github
+```
+
+2FA
+
+```bash
+# 1. دریافت QR (با توکن)
+curl -X POST http://localhost:3001/api/2fa/setup \
+  -H "Authorization: Bearer <ACCESS>"
+
+# 2. اسکن QR با اپ + ارسال کد
+curl -X POST http://localhost:3001/api/2fa/verify \
+  -H "Authorization: Bearer <ACCESS>" \
+  -H "Content-Type: application/json" \
+  -d '{"code":"123456"}'
+# → backupCodes رو بگیر و ذخیره کن
+
+# 3. ورود با 2FA
+curl -X POST http://localhost:3001/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"ali@apz.io","password":"supersecret123"}'
+# → پاسخ MFA_REQUIRED + mfaToken
+
+curl -X POST http://localhost:3001/api/2fa/challenge \
+  -H "Content-Type: application/json" \
+  -d '{"mfaToken":"<MFA_TOKEN>","code":"123456"}'
+# → accessToken نهایی
+```
+
+---
+
+✅ خلاصه ویژگی‌های اضافه‌شده
+
+ویژگی جزئیات
+🔵 Google OAuth Passport strategy + auto-link با ایمیل
+⚫ GitHub OAuth با fetch ایمیل‌های خصوصی از API
+🔗 Account Linking اتصال OAuth به کاربر موجود با همون ایمیل
+🖼️ Avatar Sync ذخیره آواتار از پروفایل
+🎫 MFA Token توکن ۵ دقیقه‌ای مخصوص چالش 2FA
+🔐 TOTP RFC 6238 سازگار با Google Authenticator, Authy, 1Password
+🔑 Backup Codes ۱۰ کد یک‌بار‌مصرف با SHA-256 hash
+🔒 Encrypted Secrets TOTP secret با AES-256-GCM رمزنگاری شده
+🎨 QR Code تولید خودکار با کتابخانه qrcode
+🌊 Flow یکپارچه OAuth + 2FA + Login سنتی همه یهجا
+🛡️ Rate-Limit Ready ساختار آماده برای افزودن throttle
