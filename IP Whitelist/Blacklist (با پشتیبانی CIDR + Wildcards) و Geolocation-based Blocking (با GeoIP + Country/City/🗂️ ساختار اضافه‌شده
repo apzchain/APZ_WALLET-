@@ -1,0 +1,21 @@
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── geo.config.ts                  ← جدید
+│   ├── data/
+│   │   └── geoip/                         ← دیتابیس MaxMind (اختیاری)
+│   ├── services/
+│   │   ├── ipAccess.service.ts            ← جدید (whitelist/blacklist)
+│   │   └── geoBlocking.service.ts         ← جدید
+│   ├── middleware/
+│   │   ├── ipAccess.middleware.ts         ← جدید
+│   │   └── geoBlocking.middleware.ts      ← جدید
+│   └── routes/
+│       ├── ipAccess.routes.ts             ← جدید (admin)
+│       └── geo.routes.ts                  ← جدید (admin)
+└── src/
+    └── components/
+        ├── admin/
+        │   ├── IpAccessPanel.tsx          ← جدید
+        │   └── GeoBlockingPanel.tsx       ← جدید
+        └── GeoBlockedPage.tsx             ← جدید
