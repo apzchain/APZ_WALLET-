@@ -1,0 +1,1508 @@
+
+---
+
+📦 نصب پکیج‌های جدید
+
+```bash
+npm install express-rate-limit express-slow-down rate-limit-sqlite helmet
+npm install -D @types/express-rate-limit
+```
+
+💡 helmet برای امنیت هدرها + express-slow-down برای تأخیر تدریجی + rate-limit-sqlite برای ذخیره‌سازی پایدار شمارنده‌ها (چون در سرور چند-اینستنسی، حافظه کافی نیست).
+
+---
+
+🗂️ ساختار اضافه‌شده
+
+```text
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── security.config.ts          ← جدید
+│   ├── middleware/
+│   │   ├── rateLimit.middleware.ts     ← جدید
+│   │   ├── bruteForce.middleware.ts    ← جدید
+│   │   ├── captcha.middleware.ts       ← جدید
+│   │   └── securityHeaders.ts          ← جدید
+│   ├── services/
+│   │   ├── security.service.ts         ← جدید
+│   │   └── captcha.service.ts          ← جدید
+│   └── routes/
+│       └── security.routes.ts          ← جدید (برای گزارش IP ban)
+└── src/
+    └── components/
+        ├── Captcha.tsx                 ← جدید
+        └── SecurityAlert.tsx           ← جدید
+```
+
+---
+
+⚙️ .env.example — اضافه کن
+
+```env
+# ───── Brute-force Protection ─────
+# حداکثر تلاش ناموفق قبل از قفل شدن اکانت
+MAX_FAILED_ATTEMPTS=5
+# مدت قفل اکانت (دقیقه)
+ACCOUNT_LOCKOUT_MINUTES=15
+# حداکثر تلاش از یک IP در پنجره
+MAX_IP_ATTEMPTS=20
+# پنجره شمارش IP (دقیقه)
+IP_WINDOW_MINUTES=15
+# مدت IP ban بعد از تجاوز (دقیقه)
+IP_BAN_MINUTES=60
+# آیا CAPTCHA فعال باشه؟
+CAPTCHA_ENABLED=true
+# کلیدهای hCaptcha
+HCAPTCHA_SITE_KEY=your-hcaptcha-site-key
+HCAPTCHA_SECRET=your-hcaptcha-secret
+```
+
+---
+
+⚙️ server/config/security.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const SECURITY_CONFIG = {
+  // ───── Account Lockout ─────
+  maxFailedAttempts: Number(process.env.MAX_FAILED_ATTEMPTS || 5),
+  accountLockoutMs: Number(process.env.ACCOUNT_LOCKOUT_MINUTES || 15) * 60 * 1000,
+  // بعد از این تعداد تلاش، lockout طولانی‌تر می‌شه
+  lockoutEscalation: [15, 60, 360, 1440], // minutes: 15m → 1h → 6h → 24h
+
+  // ───── IP-based ─────
+  maxIpAttempts: Number(process.env.MAX_IP_ATTEMPTS || 20),
+  ipWindowMs: Number(process.env.IP_WINDOW_MINUTES || 15) * 60 * 1000,
+  ipBanMs: Number(process.env.IP_BAN_MINUTES || 60) * 60 * 1000,
+
+  // ───── Rate Limits ─────
+  rateLimits: {
+    global: { windowMs: 60_000, max: 300 },          // 300 req/min
+    auth: { windowMs: 60_000, max: 10 },             // 10 req/min
+    register: { windowMs: 3600_000, max: 5 },        // 5 register/hour
+    passwordReset: { windowMs: 3600_000, max: 3 },   // 3 reset/hour
+    twoFactor: { windowMs: 60_000, max: 5 },         // 5 TOTP/min
+    oauth: { windowMs: 60_000, max: 15 }
+  },
+
+  // ───── Slow-down (تأخیر تدریجی) ─────
+  slowDown: {
+    authWindowMs: 60_000,
+    delayAfter: 3,
+    delayMs: 1000,
+    maxDelayMs: 10_000
+  },
+
+  // ───── CAPTCHA ─────
+  captcha: {
+    enabled: process.env.CAPTCHA_ENABLED === 'true',
+    siteKey: process.env.HCAPTCHA_SITE_KEY || '',
+    secret: process.env.HCAPTCHA_SECRET || '',
+    verifyUrl: 'https://hcaptcha.com/siteverify',
+    // CAPTCHA بعد از این تعداد تلاش ناموفق اجباری می‌شه
+    triggerAfterAttempts: 3
+  },
+
+  // ───── Suspicious Activity ─────
+  suspicious: {
+    // اگه user-agent تغییر ناگهانی کرد
+    detectUaChange: true,
+    // اگه IP کاربر غیرمنتظره تغییر کرد
+    detectIpChange: true,
+    // هشدار اگه از چند کشور مختلف در بازه کوتاه
+    detectGeoVelocity: false
+  }
+};
+```
+
+---
+
+🗄️ به‌روزرسانی server/services/db.service.ts
+
+این جداول رو به db.exec() اضافه کن:
+
+```typescript
+db.exec(`
+  -- ───── Failed Login Attempts ─────
+  CREATE TABLE IF NOT EXISTS failed_attempts (
+    id TEXT PRIMARY KEY,
+    identifier TEXT NOT NULL,          -- email OR ip
+    identifier_type TEXT NOT NULL,     -- 'email' | 'ip'
+    user_id TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    reason TEXT,                       -- 'wrong_password' | 'unknown_user' | 'invalid_2fa'
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_failed_identifier ON failed_attempts(identifier, created_at);
+  CREATE INDEX IF NOT EXISTS idx_failed_ip ON failed_attempts(ip_address, created_at);
+
+  -- ───── Account Lockouts ─────
+  CREATE TABLE IF NOT EXISTS account_lockouts (
+    user_id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    locked_until INTEGER NOT NULL,
+    escalation_level INTEGER NOT NULL DEFAULT 0,
+    reason TEXT,
+    last_failed_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_lockouts_email ON account_lockouts(email);
+
+  -- ───── IP Bans ─────
+  CREATE TABLE IF NOT EXISTS ip_bans (
+    ip_address TEXT PRIMARY KEY,
+    banned_until INTEGER NOT NULL,
+    reason TEXT,
+    attempts_count INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_ip_bans_until ON ip_bans(banned_until);
+
+  -- ───── Suspicious Activity Log ─────
+  CREATE TABLE IF NOT EXISTS suspicious_activity (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    activity_type TEXT NOT NULL,       -- 'ua_change' | 'ip_change' | 'rate_abuse' | 'captcha_fail'
+    severity TEXT NOT NULL,            -- 'low' | 'medium' | 'high'
+    details TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_suspicious_user ON suspicious_activity(user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_suspicious_type ON suspicious_activity(activity_type, created_at);
+
+  -- ───── CAPTCHA Challenges ─────
+  CREATE TABLE IF NOT EXISTS captcha_challenges (
+    identifier TEXT PRIMARY KEY,       -- email OR ip
+    challenge_required INTEGER NOT NULL DEFAULT 0,
+    required_until INTEGER NOT NULL,
+    solved_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+`);
+```
+
+---
+
+🛡️ server/services/security.service.ts
+
+```typescript
+import crypto from 'crypto';
+import db from './db.service.js';
+import { SECURITY_CONFIG } from '../config/security.config.js';
+
+export interface FailedAttemptInput {
+  identifier: string;
+  identifierType: 'email' | 'ip';
+  userId?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  reason?: string;
+}
+
+export class SecurityService {
+  // ═══════════════════════════════════════════
+  //  Failed Attempts
+  // ═══════════════════════════════════════════
+
+  recordFailedAttempt(input: FailedAttemptInput) {
+    db.prepare(`
+      INSERT INTO failed_attempts 
+        (id, identifier, identifier_type, user_id, ip_address, user_agent, reason, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      input.identifier.toLowerCase(),
+      input.identifierType,
+      input.userId || null,
+      input.ipAddress || null,
+      input.userAgent || null,
+      input.reason || 'unknown',
+      Date.now()
+    );
+  }
+
+  countRecentFailedAttempts(
+    identifier: string,
+    type: 'email' | 'ip',
+    windowMs: number
+  ): number {
+    const since = Date.now() - windowMs;
+    const row = db.prepare(`
+      SELECT COUNT(*) as cnt FROM failed_attempts 
+      WHERE identifier = ? AND identifier_type = ? AND created_at > ?
+    `).get(identifier.toLowerCase(), type, since) as { cnt: number };
+    return row.cnt;
+  }
+
+  // ═══════════════════════════════════════════
+  //  Account Lockout
+  // ═══════════════════════════════════════════
+
+  isAccountLocked(userId: string): { locked: boolean; until?: number; remainingMs?: number } {
+    const row = db.prepare('SELECT * FROM account_lockouts WHERE user_id = ?')
+      .get(userId) as any;
+    if (!row) return { locked: false };
+
+    if (row.locked_until > Date.now()) {
+      return {
+        locked: true,
+        until: row.locked_until,
+        remainingMs: row.locked_until - Date.now()
+      };
+    }
+
+    // lockout منقضی شده، پاک کن
+    db.prepare('DELETE FROM account_lockouts WHERE user_id = ?').run(userId);
+    return { locked: false };
+  }
+
+  /**
+   * قفل کردن اکانت با escalation تدریجی
+   */
+  lockAccount(userId: string, email: string, reason: string = 'too_many_failed_attempts') {
+    const existing = db.prepare('SELECT * FROM account_lockouts WHERE user_id = ?')
+      .get(userId) as any;
+
+    const prevLevel = existing?.escalation_level ?? -1;
+    const newLevel = Math.min(prevLevel + 1, SECURITY_CONFIG.lockoutEscalation.length - 1);
+    const minutes = SECURITY_CONFIG.lockoutEscalation[newLevel];
+    const lockMs = minutes * 60 * 1000;
+
+    db.prepare(`
+      INSERT INTO account_lockouts 
+        (user_id, email, locked_until, escalation_level, reason, last_failed_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        locked_until = excluded.locked_until,
+        escalation_level = excluded.escalation_level,
+        reason = excluded.reason,
+        last_failed_at = excluded.last_failed_at
+    `).run(
+      userId,
+      email.toLowerCase(),
+      Date.now() + lockMs,
+      newLevel,
+      reason,
+      Date.now(),
+      existing?.created_at ?? Date.now()
+    );
+
+    return { lockedUntil: Date.now() + lockMs, level: newLevel, minutes };
+  }
+
+  unlockAccount(userId: string) {
+    db.prepare('DELETE FROM account_lockouts WHERE user_id = ?').run(userId);
+  }
+
+  /**
+   * بعد از ورود موفق، همه چیز رو ریست کن
+   */
+  resetUserFailures(userId: string, email: string, ip?: string) {
+    db.prepare('DELETE FROM account_lockouts WHERE user_id = ?').run(userId);
+    db.prepare(`
+      DELETE FROM failed_attempts 
+      WHERE identifier = ? AND identifier_type = 'email'
+    `).run(email.toLowerCase());
+    if (ip) {
+      db.prepare(`
+        DELETE FROM failed_attempts 
+        WHERE identifier = ? AND identifier_type = 'ip'
+      `).run(ip);
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  //  IP Ban
+  // ═══════════════════════════════════════════
+
+  isIpBanned(ip: string): { banned: boolean; until?: number } {
+    const row = db.prepare('SELECT * FROM ip_bans WHERE ip_address = ?').get(ip) as any;
+    if (!row) return { banned: false };
+
+    if (row.banned_until > Date.now()) {
+      return { banned: true, until: row.banned_until };
+    }
+    db.prepare('DELETE FROM ip_bans WHERE ip_address = ?').run(ip);
+    return { banned: false };
+  }
+
+  banIp(ip: string, reason: string, durationMs?: number) {
+    const banMs = durationMs || SECURITY_CONFIG.ipBanMs;
+    const existing = db.prepare('SELECT * FROM ip_bans WHERE ip_address = ?').get(ip) as any;
+
+    db.prepare(`
+      INSERT INTO ip_bans (ip_address, banned_until, reason, attempts_count, created_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(ip_address) DO UPDATE SET
+        banned_until = excluded.banned_until,
+        reason = excluded.reason,
+        attempts_count = ip_bans.attempts_count + 1
+    `).run(
+      ip,
+      Date.now() + banMs,
+      reason,
+      (existing?.attempts_count ?? 0) + 1,
+      existing?.created_at ?? Date.now()
+    );
+
+    return { bannedUntil: Date.now() + banMs };
+  }
+
+  unbanIp(ip: string) {
+    db.prepare('DELETE FROM ip_bans WHERE ip_address = ?').run(ip);
+  }
+
+  getActiveBans() {
+    return db.prepare(`
+      SELECT * FROM ip_bans WHERE banned_until > ? ORDER BY banned_until DESC
+    `).all(Date.now());
+  }
+
+  // ═══════════════════════════════════════════
+  //  Suspicious Activity
+  // ═══════════════════════════════════════════
+
+  logSuspicious(params: {
+    userId?: string;
+    ipAddress?: string;
+    userAgent?: string;
+    activityType: string;
+    severity: 'low' | 'medium' | 'high';
+    details?: any;
+  }) {
+    db.prepare(`
+      INSERT INTO suspicious_activity 
+        (id, user_id, ip_address, user_agent, activity_type, severity, details, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      params.userId || null,
+      params.ipAddress || null,
+      params.userAgent || null,
+      params.activityType,
+      params.severity,
+      params.details ? JSON.stringify(params.details) : null,
+      Date.now()
+    );
+  }
+
+  getSuspiciousActivity(userId: string, limit = 50) {
+    return db.prepare(`
+      SELECT * FROM suspicious_activity 
+      WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
+    `).all(userId, limit);
+  }
+
+  // ═══════════════════════════════════════════
+  //  CAPTCHA Requirement
+  // ═══════════════════════════════════════════
+
+  requireCaptcha(identifier: string) {
+    const now = Date.now();
+    const until = now + 30 * 60 * 1000; // 30 دقیقه معتبر
+
+    db.prepare(`
+      INSERT INTO captcha_challenges 
+        (identifier, challenge_required, required_until, solved_at, created_at)
+      VALUES (?, 1, ?, NULL, ?)
+      ON CONFLICT(identifier) DO UPDATE SET
+        challenge_required = 1,
+        required_until = excluded.required_until,
+        solved_at = NULL
+    `).run(identifier.toLowerCase(), until, now);
+  }
+
+  isCaptchaRequired(identifier: string): boolean {
+    const row = db.prepare(`
+      SELECT * FROM captcha_challenges WHERE identifier = ?
+    `).get(identifier.toLowerCase()) as any;
+
+    if (!row) return false;
+    if (row.required_until < Date.now()) {
+      db.prepare('DELETE FROM captcha_challenges WHERE identifier = ?').run(identifier.toLowerCase());
+      return false;
+    }
+    return row.challenge_required === 1 && !row.solved_at;
+  }
+
+  markCaptchaSolved(identifier: string) {
+    db.prepare(`
+      UPDATE captcha_challenges 
+      SET solved_at = ? WHERE identifier = ?
+    `).run(Date.now(), identifier.toLowerCase());
+  }
+
+  // ═══════════════════════════════════════════
+  //  Cleanup (cron-like)
+  // ═══════════════════════════════════════════
+
+  cleanup() {
+    const now = Date.now();
+    const oldAttempts = now - 24 * 60 * 60 * 1000;
+
+    db.prepare('DELETE FROM failed_attempts WHERE created_at < ?').run(oldAttempts);
+    db.prepare('DELETE FROM account_lockouts WHERE locked_until < ?').run(now);
+    db.prepare('DELETE FROM ip_bans WHERE banned_until < ?').run(now);
+    db.prepare('DELETE FROM captcha_challenges WHERE required_until < ?').run(now);
+    db.prepare('DELETE FROM suspicious_activity WHERE created_at < ?').run(oldAttempts);
+
+    console.log('🧹 Security cleanup done at', new Date().toISOString());
+  }
+}
+
+export const securityService = new SecurityService();
+
+// هر ۱۰ دقیقه یکبار پاکسازی
+setInterval(() => securityService.cleanup(), 10 * 60 * 1000);
+```
+
+---
+
+🌊 server/middleware/rateLimit.middleware.ts
+
+```typescript
+import rateLimit from 'express-rate-limit';
+import slowDown from 'express-slow-down';
+import { SECURITY_CONFIG } from '../config/security.config.js';
+
+/**
+ * helper: چه چیزی رو محدود کنیم؟ IP یا ایمیل؟
+ */
+function ipKey(req: any) {
+  return req.ip || req.headers['x-forwarded-for'] || 'unknown';
+}
+
+function emailKey(req: any) {
+  return (req.body?.email || 'anon').toString().toLowerCase();
+}
+
+// ═══════════════════════════════════════════
+//  Global Rate Limit — همه API ها
+// ═══════════════════════════════════════════
+export const globalLimiter = rateLimit({
+  windowMs: SECURITY_CONFIG.rateLimits.global.windowMs,
+  max: SECURITY_CONFIG.rateLimits.global.max,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many requests, please slow down.',
+    code: 'RATE_LIMIT_EXCEEDED'
+  }
+});
+
+// ═══════════════════════════════════════════
+//  Auth Limiter — بر اساس IP + email
+// ═══════════════════════════════════════════
+export const authLimiter = rateLimit({
+  windowMs: SECURITY_CONFIG.rateLimits.auth.windowMs,
+  max: SECURITY_CONFIG.rateLimits.auth.max,
+  keyGenerator: req => `${ipKey(req)}:${emailKey(req)}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: {
+    success: false,
+    error: 'Too many login attempts. Please try again later.',
+    code: 'LOGIN_RATE_LIMIT'
+  }
+});
+
+// ═══════════════════════════════════════════
+//  Register Limiter — سخت‌گیرانه
+// ═══════════════════════════════════════════
+export const registerLimiter = rateLimit({
+  windowMs: SECURITY_CONFIG.rateLimits.register.windowMs,
+  max: SECURITY_CONFIG.rateLimits.register.max,
+  keyGenerator: ipKey,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many registration attempts from this IP.',
+    code: 'REGISTER_RATE_LIMIT'
+  }
+});
+
+// ═══════════════════════════════════════════
+//  2FA Limiter — جلوگیری از brute-force روی کدهای TOTP
+// ═══════════════════════════════════════════
+export const twoFactorLimiter = rateLimit({
+  windowMs: SECURITY_CONFIG.rateLimits.twoFactor.windowMs,
+  max: SECURITY_CONFIG.rateLimits.twoFactor.max,
+  keyGenerator: req => {
+    const token = req.body?.mfaToken || '';
+    return `${ipKey(req)}:${token.slice(0, 20)}`;
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many 2FA attempts.',
+    code: 'TWOFA_RATE_LIMIT'
+  }
+});
+
+// ═══════════════════════════════════════════
+//  Password Reset Limiter
+// ═══════════════════════════════════════════
+export const passwordResetLimiter = rateLimit({
+  windowMs: SECURITY_CONFIG.rateLimits.passwordReset.windowMs,
+  max: SECURITY_CONFIG.rateLimits.passwordReset.max,
+  keyGenerator: emailKey,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many password reset requests.',
+    code: 'PWRESET_RATE_LIMIT'
+  }
+});
+
+// ═══════════════════════════════════════════
+//  OAuth Limiter
+// ═══════════════════════════════════════════
+export const oauthLimiter = rateLimit({
+  windowMs: SECURITY_CONFIG.rateLimits.oauth.windowMs,
+  max: SECURITY_CONFIG.rateLimits.oauth.max,
+  keyGenerator: ipKey,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many OAuth attempts.',
+    code: 'OAUTH_RATE_LIMIT'
+  }
+});
+
+// ═══════════════════════════════════════════
+//  Slow-down — تأخیر تدریجی به‌جای بلاک
+// ═══════════════════════════════════════════
+export const authSlowDown = slowDown({
+  windowMs: SECURITY_CONFIG.slowDown.authWindowMs,
+  delayAfter: SECURITY_CONFIG.slowDown.delayAfter,
+  delayMs: () => SECURITY_CONFIG.slowDown.delayMs,
+  maxDelayMs: SECURITY_CONFIG.slowDown.maxDelayMs,
+  keyGenerator: req => `${ipKey(req)}:${emailKey(req)}`,
+  validate: { delayMs: false }
+});
+```
+
+---
+
+🛡️ server/middleware/bruteForce.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { SECURITY_CONFIG } from '../config/security.config.js';
+import { securityService } from '../services/security.service.js';
+import { userModel } from '../models/User.model.js';
+
+/**
+ * چک IP ban
+ * این middleware اول از همه روی روت‌های حساس اجرا می‌شه
+ */
+export function checkIpBan(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip || 'unknown';
+  const { banned, until } = securityService.isIpBanned(ip);
+
+  if (banned) {
+    const remaining = Math.ceil(((until || 0) - Date.now()) / 1000);
+    return res.status(403).json({
+      success: false,
+      error: `Your IP is temporarily banned. Try again in ${remaining}s.`,
+      code: 'IP_BANNED',
+      retryAfter: remaining
+    });
+  }
+
+  next();
+}
+
+/**
+ * چک قفل بودن اکانت قبل از تلاش ورود
+ */
+export function checkAccountLock(req: Request, res: Response, next: NextFunction) {
+  const email = (req.body?.email || '').toString().toLowerCase();
+  if (!email) return next();
+
+  const user = userModel.findByEmail(email);
+  if (!user) return next(); // کاربر نیست → بررسی ادامه می‌ده در ادامه
+
+  const { locked, until, remainingMs } = securityService.isAccountLocked(user.id);
+
+  if (locked) {
+    const remainingMin = Math.ceil((remainingMs || 0) / 60_000);
+    return res.status(423).json({
+      success: false,
+      error: `Account is temporarily locked. Try again in ${remainingMin} minute(s).`,
+      code: 'ACCOUNT_LOCKED',
+      lockedUntil: until,
+      retryAfter: Math.ceil((remainingMs || 0) / 1000)
+    });
+  }
+
+  next();
+}
+
+/**
+ * بعد از یک تلاش ناموفق، این تابع رو صدا بزن
+ */
+export function handleFailedLogin(params: {
+  email: string;
+  ip: string;
+  userAgent?: string;
+  userId?: string;
+  reason: string;
+}) {
+  const { email, ip, userAgent, userId, reason } = params;
+
+  // 1. ثبت تلاش
+  securityService.recordFailedAttempt({
+    identifier: email,
+    identifierType: 'email',
+    userId,
+    ipAddress: ip,
+    userAgent,
+    reason
+  });
+
+  securityService.recordFailedAttempt({
+    identifier: ip,
+    identifierType: 'ip',
+    userId,
+    ipAddress: ip,
+    userAgent,
+    reason
+  });
+
+  // 2. شمارش و قفل اکانت
+  if (userId) {
+    const failedCount = securityService.countRecentFailedAttempts(
+      email,
+      'email',
+      SECURITY_CONFIG.ipWindowMs
+    );
+
+    if (failedCount >= SECURITY_CONFIG.maxFailedAttempts) {
+      const result = securityService.lockAccount(userId, email, reason);
+      securityService.logSuspicious({
+        userId,
+        ipAddress: ip,
+        userAgent,
+        activityType: 'account_lockout',
+        severity: result.level >= 2 ? 'high' : 'medium',
+        details: { level: result.level, minutes: result.minutes, reason }
+      });
+    }
+  }
+
+  // 3. شمارش IP و ban
+  const ipAttempts = securityService.countRecentFailedAttempts(
+    ip,
+    'ip',
+    SECURITY_CONFIG.ipWindowMs
+  );
+
+  if (ipAttempts >= SECURITY_CONFIG.maxIpAttempts) {
+    securityService.banIp(ip, 'too_many_failed_logins');
+    securityService.logSuspicious({
+      userId,
+      ipAddress: ip,
+      userAgent,
+      activityType: 'ip_banned',
+      severity: 'high',
+      details: { attempts: ipAttempts }
+    });
+  }
+
+  // 4. CAPTCHA رو در ادامه اجبار کن
+  if (failedCount >= SECURITY_CONFIG.captcha.triggerAfterAttempts) {
+    securityService.requireCaptcha(email);
+  }
+}
+
+/**
+ * بررسی تغییر ناگهانی user-agent یا IP
+ */
+export function detectAnomaly(req: Request, userId: string) {
+  // (این تابع رو می‌تونی در login موفق هم صدا بزنی)
+  const ip = req.ip || 'unknown';
+  const ua = req.headers['user-agent'] || '';
+
+  // TODO: می‌تونی آخرین IP/UA کاربر رو در DB نگه داری و مقایسه کنی
+  // فعلاً صرفاً log می‌کنیم
+
+  securityService.logSuspicious({
+    userId,
+    ipAddress: ip,
+    userAgent: ua,
+    activityType: 'login_success',
+    severity: 'low'
+  });
+}
+```
+
+---
+
+🤖 server/services/captcha.service.ts
+
+```typescript
+import { SECURITY_CONFIG } from '../config/security.config.js';
+
+export class CaptchaService {
+  /**
+   * تأیید توکن hCaptcha با سرور hCaptcha
+   */
+  async verify(token: string, remoteIp?: string): Promise<boolean> {
+    if (!SECURITY_CONFIG.captcha.enabled) return true; // غیرفعال → همیشه قبول
+
+    if (!token) return false;
+
+    try {
+      const body = new URLSearchParams({
+        secret: SECURITY_CONFIG.captcha.secret,
+        response: token,
+        ...(remoteIp ? { remoteip: remoteIp } : {})
+      });
+
+      const res = await fetch(SECURITY_CONFIG.captcha.verifyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body
+      });
+      const data = await res.json();
+      return data.success === true;
+    } catch (err) {
+      console.error('[CaptchaService] verify error:', err);
+      return false;
+    }
+  }
+}
+
+export const captchaService = new CaptchaService();
+```
+
+---
+
+🤖 server/middleware/captcha.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { SECURITY_CONFIG } from '../config/security.config.js';
+import { captchaService } from '../services/captcha.service.js';
+import { securityService } from '../services/security.service.js';
+
+/**
+ * اگر برای این identifier CAPTCHA اجباری شده، توکن رو چک کن
+ */
+export function requireCaptchaIfNeeded(req: Request, res: Response, next: NextFunction) {
+  if (!SECURITY_CONFIG.captcha.enabled) return next();
+
+  const email = (req.body?.email || '').toString().toLowerCase();
+  const ip = req.ip || 'unknown';
+
+  const emailNeedsCaptcha = email && securityService.isCaptchaRequired(email);
+  const ipNeedsCaptcha = securityService.isCaptchaRequired(ip);
+
+  if (!emailNeedsCaptcha && !ipNeedsCaptcha) return next();
+
+  const token = req.body?.captchaToken;
+  if (!token) {
+    return res.status(400).json({
+      success: false,
+      error: 'CAPTCHA required',
+      code: 'CAPTCHA_REQUIRED',
+      siteKey: SECURITY_CONFIG.captcha.siteKey
+    });
+  }
+
+  captchaService.verify(token, ip).then(ok => {
+    if (!ok) {
+      securityService.logSuspicious({
+        ipAddress: ip,
+        userAgent: req.headers['user-agent'],
+        activityType: 'captcha_fail',
+        severity: 'medium'
+      });
+      return res.status(400).json({
+        success: false,
+        error: 'CAPTCHA verification failed',
+        code: 'CAPTCHA_FAILED'
+      });
+    }
+    if (email) securityService.markCaptchaSolved(email);
+    securityService.markCaptchaSolved(ip);
+    next();
+  }).catch(next);
+}
+```
+
+---
+
+🛡️ server/middleware/securityHeaders.ts
+
+```typescript
+import helmet from 'helmet';
+
+export const securityHeaders = helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", 'https://js.hcaptcha.com', "'unsafe-inline'"],
+      frameSrc: ['https://newassets.hcaptcha.com', 'https://js.hcaptcha.com'],
+      connectSrc: ["'self'", 'https://hcaptcha.com', 'https://*.hcaptcha.com'],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'https:']
+    }
+  },
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+});
+```
+
+---
+
+🛣️ server/routes/security.routes.ts (برای ادمین)
+
+```typescript
+import { Router } from 'express';
+import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { securityService } from '../services/security.service.js';
+
+const router = Router();
+
+// فقط ادمین‌ها
+router.use(requireAuth, requireRole('admin'));
+
+// لیست IP های بن شده
+router.get('/bans', (_req, res) => {
+  res.json({ success: true, data: securityService.getActiveBans() });
+});
+
+// آنبن کردن IP
+router.delete('/bans/:ip', (req, res) => {
+  securityService.unbanIp(req.params.ip);
+  res.json({ success: true });
+});
+
+// گزارش فعالیت مشکوک یک کاربر
+router.get('/suspicious/:userId', (req, res) => {
+  const rows = securityService.getSuspiciousActivity(req.params.userId);
+  res.json({ success: true, data: rows });
+});
+
+// آنلاک کردن دستی اکانت
+router.post('/unlock/:userId', (req, res) => {
+  securityService.unlockAccount(req.params.userId);
+  res.json({ success: true });
+});
+
+export default router;
+```
+
+---
+
+🔄 به‌روزرسانی server/services/auth.service.ts — مهم‌ترین بخش
+
+متد login رو کاملاً بازنویسی کن:
+
+```typescript
+import { securityService } from './security.service.js';
+import { SECURITY_CONFIG } from '../config/security.config.js';
+
+async login(params: {
+  email: string;
+  password: string;
+  totpCode?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}) {
+  const { email, password, totpCode, ipAddress, userAgent } = params;
+  const normalizedEmail = email.toLowerCase();
+
+  // 1. IP ban چک شده در middleware، ولی دوباره مطمئن شو
+  if (ipAddress) {
+    const { banned } = securityService.isIpBanned(ipAddress);
+    if (banned) throw Object.assign(new Error('IP banned'), { status: 403, code: 'IP_BANNED' });
+  }
+
+  // 2. کاربر رو پیدا کن
+  const user = userModel.findByEmail(normalizedEmail);
+
+  // 3. اکانت قفل؟
+  if (user) {
+    const { locked, remainingMs } = securityService.isAccountLocked(user.id);
+    if (locked) {
+      throw Object.assign(
+        new Error(`Account locked for ${Math.ceil((remainingMs || 0) / 60000)}m`),
+        { status: 423, code: 'ACCOUNT_LOCKED' }
+      );
+    }
+  }
+
+  // 4. تأیید رمز
+  const ok = user ? await this.verifyPassword(user.password_hash, password) : false;
+
+  if (!user || !ok || !user.is_active) {
+    // ثبت تلاش ناموفق
+    securityService.recordFailedAttempt({
+      identifier: normalizedEmail,
+      identifierType: 'email',
+      userId: user?.id,
+      ipAddress,
+      userAgent,
+      reason: user ? 'wrong_password' : 'unknown_user'
+    });
+
+    if (ipAddress) {
+      securityService.recordFailedAttempt({
+        identifier: ipAddress,
+        identifierType: 'ip',
+        userId: user?.id,
+        ipAddress,
+        userAgent,
+        reason: user ? 'wrong_password' : 'unknown_user'
+      });
+    }
+
+    // قفل اکانت اگه لازمه
+    if (user) {
+      const failedCount = securityService.countRecentFailedAttempts(
+        normalizedEmail, 'email', SECURITY_CONFIG.ipWindowMs
+      );
+
+      if (failedCount >= SECURITY_CONFIG.maxFailedAttempts) {
+        const result = securityService.lockAccount(user.id, normalizedEmail);
+        securityService.logSuspicious({
+          userId: user.id,
+          ipAddress,
+          userAgent,
+          activityType: 'account_lockout',
+          severity: 'high',
+          details: { level: result.level, minutes: result.minutes }
+        });
+      }
+
+      // CAPTCHA اجبار کن
+      if (failedCount >= SECURITY_CONFIG.captcha.triggerAfterAttempts) {
+        securityService.requireCaptcha(normalizedEmail);
+      }
+    }
+
+    // ban IP اگه لازمه
+    if (ipAddress) {
+      const ipAttempts = securityService.countRecentFailedAttempts(
+        ipAddress, 'ip', SECURITY_CONFIG.ipWindowMs
+      );
+      if (ipAttempts >= SECURITY_CONFIG.maxIpAttempts) {
+        securityService.banIp(ipAddress, 'too_many_failed_logins');
+      }
+    }
+
+    // پیام عمومی (بدون افشای اینکه کاربر وجود داره یا نه)
+    throw Object.assign(new Error('Invalid credentials'), { status: 401 });
+  }
+
+  // 5. 2FA
+  if (totpService.isEnabled(user.id)) {
+    if (!totpCode) {
+      const mfaToken = jwt.sign(
+        { sub: user.id, purpose: 'mfa' },
+        AUTH_CONFIG.accessTokenSecret,
+        { expiresIn: '5m' }
+      );
+      throw Object.assign(
+        new Error('2FA required'),
+        { status: 401, code: 'MFA_REQUIRED', mfaToken }
+      );
+    }
+
+    if (!totpService.verifyCode(user.id, totpCode)) {
+      securityService.recordFailedAttempt({
+        identifier: normalizedEmail,
+        identifierType: 'email',
+        userId: user.id,
+        ipAddress,
+        userAgent,
+        reason: 'invalid_2fa'
+      });
+      throw Object.assign(
+        new Error('Invalid 2FA code'),
+        { status: 401, code: 'MFA_INVALID' }
+      );
+    }
+  }
+
+  // 6. ورود موفق → ریست کن
+  securityService.resetUserFailures(user.id, normalizedEmail, ipAddress);
+  userModel.updateLastLogin(user.id);
+
+  securityService.logSuspicious({
+    userId: user.id,
+    ipAddress,
+    userAgent,
+    activityType: 'login_success',
+    severity: 'low'
+  });
+
+  const tokens = await this.issueTokens(user, userAgent, ipAddress);
+  return { user: this.sanitize(user), ...tokens };
+}
+```
+
+---
+
+🖥️ به‌روزرسانی server/index.ts
+
+```typescript
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import dotenv from 'dotenv';
+import { configurePassport } from './middleware/passport.middleware.js';
+import { securityHeaders } from './middleware/securityHeaders.js';
+import {
+  globalLimiter,
+  authLimiter,
+  registerLimiter,
+  twoFactorLimiter,
+  oauthLimiter,
+  authSlowDown
+} from './middleware/rateLimit.middleware.js';
+import { checkIpBan } from './middleware/bruteForce.middleware.js';
+import authRoutes from './routes/auth.routes.js';
+import oauthRoutes from './routes/oauth.routes.js';
+import twofaRoutes from './routes/twofa.routes.js';
+import securityRoutes from './routes/security.routes.js';
+import walletRoutes from './routes/wallet.routes.js';
+import txRoutes from './routes/transaction.routes.js';
+import { errorHandler } from './middleware/errorHandler.js';
+import { requireAuth } from './middleware/auth.middleware.js';
+
+dotenv.config();
+
+const app = express();
+
+// ───── Trust proxy (برای IP واقعی پشت reverse proxy) ─────
+app.set('trust proxy', 1);
+
+configurePassport();
+
+app.use(securityHeaders);
+app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173', credentials: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(cookieParser());
+
+// ───── Global rate limit ─────
+app.use('/api', globalLimiter);
+
+// ───── IP ban check (سراسری) ─────
+app.use('/api', checkIpBan);
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', service: 'APZ Wallet API', time: Date.now() });
+});
+
+// ───── Public routes با محدودیت سخت‌گیرانه ─────
+app.use('/api/auth', authSlowDown);
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', registerLimiter);
+app.use('/api/auth', authRoutes);
+
+app.use('/api/auth/oauth', oauthLimiter, oauthRoutes);
+app.use('/api/2fa', twoFactorLimiter, twofaRoutes);
+
+// ───── Admin-only security routes ─────
+app.use('/api/security', securityRoutes);
+
+// ───── Protected routes ─────
+app.use('/api/wallet', requireAuth, walletRoutes);
+app.use('/api/tx', requireAuth, txRoutes);
+
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`🚀 APZ Wallet API on http://localhost:${PORT}`);
+  console.log(`🛡️  Brute-force protection: ACTIVE`);
+  console.log(`   Max failed attempts: ${process.env.MAX_FAILED_ATTEMPTS || 5}`);
+  console.log(`   Account lockout: ${process.env.ACCOUNT_LOCKOUT_MINUTES || 15}m`);
+  console.log(`   CAPTCHA: ${process.env.CAPTCHA_ENABLED === 'true' ? 'ON' : 'OFF'}`);
+});
+```
+
+---
+
+🎨 به‌روزرسانی errorHandler.ts
+
+```typescript
+export function errorHandler(err: any, _req: Request, res: Response, _next: NextFunction) {
+  console.error('[Error]', err);
+
+  // ───── MFA ─────
+  if (err.code === 'MFA_REQUIRED') {
+    return res.status(401).json({
+      success: false,
+      code: 'MFA_REQUIRED',
+      mfaToken: err.mfaToken,
+      error: err.message
+    });
+  }
+  if (err.code === 'MFA_INVALID') {
+    return res.status(401).json({
+      success: false,
+      code: 'MFA_INVALID',
+      error: err.message
+    });
+  }
+
+  // ───── Brute-force related ─────
+  if (err.code === 'IP_BANNED' || err.code === 'ACCOUNT_LOCKED') {
+    return res.status(err.status || 403).json({
+      success: false,
+      code: err.code,
+      error: err.message,
+      retryAfter: err.retryAfter
+    });
+  }
+
+  res.status(err.status || 500).json({
+    success: false,
+    error: err.message || 'Internal Server Error'
+  });
+}
+```
+
+---
+
+🖥️ کامپوننت src/components/Captcha.tsx
+
+```tsx
+import React, { useEffect, useRef } from 'react';
+
+declare global {
+  interface Window {
+    hcaptcha?: any;
+  }
+}
+
+interface Props {
+  siteKey: string;
+  onVerify: (token: string) => void;
+  onExpire?: () => void;
+}
+
+export const Captcha: React.FC<Props> = ({ siteKey, onVerify, onExpire }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const widgetId = useRef<string | null>(null);
+
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://js.hcaptcha.com/1/api.js?render=explicit';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      if (!ref.current || !window.hcaptcha) return;
+      widgetId.current = window.hcaptcha.render(ref.current, {
+        sitekey: siteKey,
+        callback: onVerify,
+        'expired-callback': onExpire
+      });
+    };
+    document.head.appendChild(script);
+    return () => {
+      if (widgetId.current && window.hcaptcha) {
+        try { window.hcaptcha.remove(widgetId.current); } catch {}
+      }
+    };
+  }, [siteKey, onVerify, onExpire]);
+
+  return <div ref={ref} className="captcha-widget" />;
+};
+```
+
+---
+
+🖥️ کامپوننت src/components/SecurityAlert.tsx
+
+```tsx
+import React from 'react';
+
+interface Props {
+  code: string;
+  retryAfter?: number;
+  message?: string;
+}
+
+export const SecurityAlert: React.FC<Props> = ({ code, retryAfter, message }) => {
+  const minutes = retryAfter ? Math.ceil(retryAfter / 60) : null;
+
+  const configs: Record<string, { icon: string; title: string; color: string }> = {
+    ACCOUNT_LOCKED: {
+      icon: '🔒',
+      title: 'اکانت موقتاً قفل شده',
+      color: '#f59e0b'
+    },
+    IP_BANNED: {
+      icon: '🚫',
+      title: 'IP شما موقتاً بلاک شده',
+      color: '#ef4444'
+    },
+    RATE_LIMIT_EXCEEDED: {
+      icon: '⏱️',
+      title: 'تعداد درخواست‌ها بیش از حد مجاز',
+      color: '#f59e0b'
+    },
+    LOGIN_RATE_LIMIT: {
+      icon: '⏱️',
+      title: 'تلاش‌های ورود زیاد',
+      color: '#f59e0b'
+    },
+    CAPTCHA_REQUIRED: {
+      icon: '🤖',
+      title: 'نیاز به تأیید CAPTCHA',
+      color: '#6c7cff'
+    }
+  };
+
+  const c = configs[code] || { icon: '⚠️', title: 'هشدار امنیتی', color: '#f59e0b' };
+
+  return (
+    <div className="security-alert" style={{ borderColor: c.color }}>
+      <div className="alert-icon" style={{ color: c.color }}>{c.icon}</div>
+      <div className="alert-body">
+        <strong>{c.title}</strong>
+        <p>{message || 'لطفاً کمی صبر کن و دوباره تلاش کن.'}</p>
+        {minutes && (
+          <small>⏳ زمان باقی‌مانده: حدود {minutes} دقیقه</small>
+        )}
+      </div>
+    </div>
+  );
+};
+```
+
+---
+
+🔄 به‌روزرسانی src/components/LoginForm.tsx
+
+```tsx
+import { Captcha } from './Captcha';
+import { SecurityAlert } from './SecurityAlert';
+
+// داخل کامپوننت:
+const [captchaToken, setCaptchaToken] = useState('');
+const [captchaRequired, setCaptchaRequired] = useState(false);
+const [securityAlert, setSecurityAlert] = useState<{ code: string; retryAfter?: number; message?: string } | null>(null);
+const [captchaSiteKey, setCaptchaSiteKey] = useState('');
+
+const onSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError(null);
+  setSecurityAlert(null);
+  setBusy(true);
+
+  try {
+    await login(email.trim().toLowerCase(), password, undefined, captchaToken || undefined);
+  } catch (err: any) {
+    // CAPTCHA لازمه
+    if (err.code === 'CAPTCHA_REQUIRED') {
+      setCaptchaRequired(true);
+      setCaptchaSiteKey(err.siteKey || import.meta.env.VITE_HCAPTCHA_SITE_KEY);
+      setError('لطفاً CAPTCHA رو تکمیل کن');
+      return;
+    }
+
+    // اکانت قفل یا IP بن
+    if (err.code === 'ACCOUNT_LOCKED' || err.code === 'IP_BANNED' || err.code?.includes('RATE_LIMIT')) {
+      setSecurityAlert({
+        code: err.code,
+        retryAfter: err.retryAfter,
+        message: err.message
+      });
+      return;
+    }
+
+    // MFA
+    if (err.mfaRequired) {
+      setNeedMfa(true);
+      return;
+    }
+
+    setError(err.message || 'Login failed');
+  } finally {
+    setBusy(false);
+  }
+};
+
+return (
+  <div className="auth-card">
+    <h2>🔐 ورود به APZ Wallet</h2>
+
+    {securityAlert && (
+      <SecurityAlert
+        code={securityAlert.code}
+        retryAfter={securityAlert.retryAfter}
+        message={securityAlert.message}
+      />
+    )}
+
+    <form onSubmit={onSubmit}>
+      {/* ... فیلدهای قبلی ... */}
+
+      {captchaRequired && captchaSiteKey && (
+        <Captcha
+          siteKey={captchaSiteKey}
+          onVerify={token => setCaptchaToken(token)}
+          onExpire={() => setCaptchaToken('')}
+        />
+      )}
+
+      {error && <div className="auth-error">⚠️ {error}</div>}
+
+      <button
+        className="btn-primary"
+        disabled={busy || (captchaRequired && !captchaToken)}
+        type="submit"
+      >
+        {busy ? 'در حال ورود…' : 'ورود'}
+      </button>
+    </form>
+    {/* ... */}
+  </div>
+);
+```
+
+---
+
+🔄 به‌روزرسانی login در AuthContext.tsx و client.ts
+
+در client.ts:
+
+```typescript
+login: (payload: { email: string; password: string; totpCode?: string; captchaToken?: string }) =>
+  request<{ user: any; accessToken: string }>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }),
+```
+
+در خطا، همه فیلدها رو propagate کن:
+
+```typescript
+const data = await res.json();
+if (!res.ok || !data.success) {
+  const err: any = new Error(data.error || 'API error');
+  err.code = data.code;
+  err.mfaToken = data.mfaToken;
+  err.retryAfter = data.retryAfter;
+  err.siteKey = data.siteKey;
+  err.lockedUntil = data.lockedUntil;
+  throw err;
+}
+```
+
+در AuthContext.tsx:
+
+```typescript
+const login = useCallback(async (
+  email: string,
+  password: string,
+  totpCode?: string,
+  captchaToken?: string
+) => {
+  try {
+    const { user, accessToken } = await apiClient.login({ email, password, totpCode, captchaToken });
+    setAccessToken(accessToken);
+    tokenStorage.setAccess(accessToken);
+    setUser(user);
+    setPendingMfaToken(null);
+  } catch (err: any) {
+    if (err.mfaToken) {
+      setPendingMfaToken(err.mfaToken);
+      throw Object.assign(new Error('MFA required'), { mfaRequired: true });
+    }
+    throw err; // همه کدهای امنیتی propagate می‌شن
+  }
+}, []);
+```
+
+---
+
+🎨 استایل‌های اضافی
+
+```css
+.security-alert {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  margin-bottom: 18px;
+  background: #1a1d26;
+  border-left: 4px solid #f59e0b;
+  border-radius: 10px;
+  direction: rtl;
+  text-align: right;
+}
+.alert-icon { font-size: 1.8rem; line-height: 1; }
+.alert-body strong { display: block; margin-bottom: 4px; color: #e7e9ee; }
+.alert-body p { margin: 0; font-size: 0.9rem; color: #a4acbd; }
+.alert-body small { color: #6c7cff; }
+
+.captcha-widget {
+  display: flex;
+  justify-content: center;
+  margin: 14px 0;
+  padding: 12px;
+  background: #0d0f14;
+  border-radius: 10px;
+}
+```
+
+---
+
+🧪 تست سریع Brute-force
+
+```bash
+# 1. تلاش‌های ورود ناموفق (پشت سرهم بزن ۶ بار)
+for i in {1..6}; do
+  curl -X POST http://localhost:3001/api/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"email":"test@apz.io","password":"wrong"}' | jq
+done
+
+# بعد از ۵ بار → ACCOUNT_LOCKED
+# بعد از ۲۰ بار از یک IP → IP_BANNED
+
+# 2. چک کردن بن‌ها (ادمین)
+curl http://localhost:3001/api/security/bans \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+
+# 3. آنبن کردن
+curl -X DELETE http://localhost:3001/api/security/bans/127.0.0.1 \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+
+---
+
+✅ خلاصه لایه‌های امنیتی اضافه‌شده
+
+لایه توضیح تریگر
+🌊 Slow-down تأخیر تدریجی 1s→10s بعد از 3 تلاش در دقیقه
+⏱️ Auth Rate Limit 10 req/min به‌ازای IP+email بلافاصله
+🚦 Global Rate Limit 300 req/min سراسری
+📝 Register Rate Limit 5 register/hour/IP بلافاصله
+🔐 Account Lockout 15m → 1h → 6h → 24h (escalating) بعد از 5 تلاش ناموفق
+🚫 IP Ban 60m بعد از 20 تلاش ناموفق از یک IP
+🤖 CAPTCHA (hCaptcha) اجباری در ورود بعد از 3 تلاش ناموفق
+📊 Suspicious Log ثبت همه رخدادها auto
+🧹 Auto Cleanup پاکسازی هر ۱۰ دقیقه زمان‌بند
+🛡️ Helmet Headers CSP, HSTS, XSS سراسری
+👁️ Trust Proxy IP واقعی پشت nginx/cloudflare startup
