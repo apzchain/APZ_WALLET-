@@ -1,0 +1,12 @@
+# 1. نصب پکیج‌ها
+npm install
+
+# 2. کپی فایل env
+cp .env.example .env
+# مقادیر APZ_RPC_URL و DEPLOYER_PRIVATE_KEY رو پر کن
+
+# 3. کامپایل قرارداد (اختیاری)
+npm run compile:contract
+
+# 4. اجرای همزمان فرانت + بک
+npm run dev
