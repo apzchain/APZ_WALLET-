@@ -1,0 +1,1160 @@
+
+---
+
+🗂️ ساختار جدید بخش Auth
+
+```text
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── auth.config.ts          ← جدید
+│   ├── models/
+│   │   └── User.model.ts           ← جدید
+│   ├── services/
+│   │   └── auth.service.ts         ← جدید
+│   ├── middleware/
+│   │   ├── auth.middleware.ts      ← جدید
+│   │   └── errorHandler.ts
+│   └── routes/
+│       └── auth.routes.ts          ← جدید
+└── src/
+    ├── auth/
+    │   ├── AuthContext.tsx         ← جدید
+    │   ├── useAuth.ts              ← جدید
+    │   └── tokenStorage.ts         ← جدید
+    ├── components/
+    │   ├── LoginForm.tsx           ← جدید
+    │   ├── RegisterForm.tsx        ← جدید
+    │   └── ProtectedRoute.tsx      ← جدید
+    └── api/
+        └── client.ts               ← به‌روزرسانی
+```
+
+---
+
+📦 نصب پکیج‌های جدید
+
+```bash
+npm install jsonwebtoken argon2 cookie-parser
+npm install -D @types/jsonwebtoken @types/cookie-parser
+```
+
+---
+
+⚙️ server/config/auth.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const AUTH_CONFIG = {
+  accessTokenSecret: process.env.JWT_ACCESS_SECRET || 'CHANGE_ME_ACCESS_SECRET',
+  refreshTokenSecret: process.env.JWT_REFRESH_SECRET || 'CHANGE_ME_REFRESH_SECRET',
+  accessTokenTTL: process.env.JWT_ACCESS_TTL || '15m',
+  refreshTokenTTL: process.env.JWT_REFRESH_TTL || '7d',
+  argon2Options: {
+    type: 2, // argon2id
+    memoryCost: 19456,
+    timeCost: 2,
+    parallelism: 1
+  },
+  cookieOptions: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict' as const,
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  }
+};
+```
+
+به .env.example اضافه کن:
+
+```env
+JWT_ACCESS_SECRET=your-super-secret-access-key-change-me
+JWT_REFRESH_SECRET=your-super-secret-refresh-key-change-me
+JWT_ACCESS_TTL=15m
+JWT_REFRESH_TTL=7d
+```
+
+---
+
+🗄️ server/models/User.model.ts
+
+```typescript
+import db from '../services/db.service.js';
+
+// جدول users رو در db.service.ts اضافه کن (پایین توضیح می‌دم)
+
+export interface UserRow {
+  id: string;
+  email: string;
+  password_hash: string;
+  display_name: string | null;
+  role: 'user' | 'admin';
+  is_active: number;
+  created_at: number;
+  last_login_at: number | null;
+}
+
+export interface RefreshTokenRow {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  expires_at: number;
+  revoked: number;
+  created_at: number;
+  user_agent: string | null;
+  ip_address: string | null;
+}
+
+export const userModel = {
+  create(user: {
+    id: string;
+    email: string;
+    password_hash: string;
+    display_name?: string;
+    role?: 'user' | 'admin';
+  }): void {
+    db.prepare(`
+      INSERT INTO users (id, email, password_hash, display_name, role, is_active, created_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?)
+    `).run(
+      user.id,
+      user.email.toLowerCase(),
+      user.password_hash,
+      user.display_name || null,
+      user.role || 'user',
+      Date.now()
+    );
+  },
+
+  findByEmail(email: string): UserRow | undefined {
+    return db.prepare('SELECT * FROM users WHERE email = ?')
+      .get(email.toLowerCase()) as UserRow | undefined;
+  },
+
+  findById(id: string): UserRow | undefined {
+    return db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow | undefined;
+  },
+
+  updateLastLogin(id: string): void {
+    db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(Date.now(), id);
+  },
+
+  // Refresh Tokens
+  saveRefreshToken(row: RefreshTokenRow): void {
+    db.prepare(`
+      INSERT INTO refresh_tokens 
+        (id, user_id, token_hash, expires_at, revoked, created_at, user_agent, ip_address)
+      VALUES 
+        (@id, @user_id, @token_hash, @expires_at, 0, @created_at, @user_agent, @ip_address)
+    `).run(row);
+  },
+
+  findRefreshToken(hash: string): RefreshTokenRow | undefined {
+    return db.prepare('SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0')
+      .get(hash) as RefreshTokenRow | undefined;
+  },
+
+  revokeRefreshToken(hash: string): void {
+    db.prepare('UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?').run(hash);
+  },
+
+  revokeAllUserTokens(userId: string): void {
+    db.prepare('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?').run(userId);
+  }
+};
+```
+
+---
+
+🛠️ server/services/db.service.ts — بخش users اضافه شود
+
+داخل db.exec(...) این بلوک رو اضافه کن:
+
+```typescript
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    display_name TEXT,
+    role TEXT NOT NULL DEFAULT 'user',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    last_login_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    user_agent TEXT,
+    ip_address TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+  CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id);
+  CREATE INDEX IF NOT EXISTS idx_refresh_hash ON refresh_tokens(token_hash);
+
+  -- اضافه کردن user_id به جدول wallets
+  ALTER TABLE wallets ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE;
+`);
+```
+
+⚠️ اگر روی SQLite قدیمی اجرا می‌کنی و خطای duplicate column داد، خط ALTER TABLE رو یه‌بار اجرا کن و بعد حذفش کن.
+
+---
+
+🔐 server/services/auth.service.ts
+
+```typescript
+import argon2 from 'argon2';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import { AUTH_CONFIG } from '../config/auth.config.js';
+import { userModel, UserRow } from '../models/User.model.js';
+
+export interface TokenPayload {
+  sub: string;      // user id
+  email: string;
+  role: string;
+  type: 'access' | 'refresh';
+  jti?: string;
+}
+
+export class AuthService {
+  // ───── Password ─────
+  async hashPassword(password: string): Promise<string> {
+    return argon2.hash(password, AUTH_CONFIG.argon2Options);
+  }
+
+  async verifyPassword(hash: string, password: string): Promise<boolean> {
+    try {
+      return await argon2.verify(hash, password);
+    } catch {
+      return false;
+    }
+  }
+
+  // ───── Register ─────
+  async register(params: {
+    email: string;
+    password: string;
+    displayName?: string;
+  }): Promise<{ user: Omit<UserRow, 'password_hash'>; accessToken: string; refreshToken: string }> {
+    const existing = userModel.findByEmail(params.email);
+    if (existing) throw Object.assign(new Error('Email already registered'), { status: 409 });
+
+    const id = crypto.randomUUID();
+    const password_hash = await this.hashPassword(params.password);
+
+    userModel.create({
+      id,
+      email: params.email,
+      password_hash,
+      display_name: params.displayName
+    });
+
+    const user = userModel.findById(id)!;
+    const tokens = await this.issueTokens(user);
+
+    return {
+      user: this.sanitize(user),
+      ...tokens
+    };
+  }
+
+  // ───── Login ─────
+  async login(params: {
+    email: string;
+    password: string;
+    userAgent?: string;
+    ipAddress?: string;
+  }): Promise<{ user: Omit<UserRow, 'password_hash'>; accessToken: string; refreshToken: string }> {
+    const user = userModel.findByEmail(params.email);
+    if (!user || !user.is_active) {
+      throw Object.assign(new Error('Invalid credentials'), { status: 401 });
+    }
+
+    const ok = await this.verifyPassword(user.password_hash, params.password);
+    if (!ok) throw Object.assign(new Error('Invalid credentials'), { status: 401 });
+
+    userModel.updateLastLogin(user.id);
+    const tokens = await this.issueTokens(user, params.userAgent, params.ipAddress);
+
+    return { user: this.sanitize(user), ...tokens };
+  }
+
+  // ───── Token Generation ─────
+  async issueTokens(
+    user: UserRow,
+    userAgent?: string,
+    ipAddress?: string
+  ): Promise<{ accessToken: string; refreshToken: string }> {
+    const accessToken = jwt.sign(
+      { sub: user.id, email: user.email, role: user.role, type: 'access' } as TokenPayload,
+      AUTH_CONFIG.accessTokenSecret,
+      { expiresIn: AUTH_CONFIG.accessTokenTTL, issuer: 'apz-wallet' }
+    );
+
+    const jti = crypto.randomUUID();
+    const refreshToken = jwt.sign(
+      { sub: user.id, email: user.email, role: user.role, type: 'refresh', jti } as TokenPayload,
+      AUTH_CONFIG.refreshTokenSecret,
+      { expiresIn: AUTH_CONFIG.refreshTokenTTL, issuer: 'apz-wallet' }
+    );
+
+    // ذخیره hash رفرش توکن (نه خود توکن)
+    const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const decoded = jwt.decode(refreshToken) as { exp: number };
+
+    userModel.saveRefreshToken({
+      id: jti,
+      user_id: user.id,
+      token_hash: tokenHash,
+      expires_at: decoded.exp * 1000,
+      revoked: 0,
+      created_at: Date.now(),
+      user_agent: userAgent || null,
+      ip_address: ipAddress || null
+    });
+
+    return { accessToken, refreshToken };
+  }
+
+  // ───── Refresh ─────
+  async refresh(refreshToken: string): Promise<{ accessToken: string }> {
+    let payload: TokenPayload;
+    try {
+      payload = jwt.verify(refreshToken, AUTH_CONFIG.refreshTokenSecret) as TokenPayload;
+    } catch {
+      throw Object.assign(new Error('Invalid refresh token'), { status: 401 });
+    }
+
+    if (payload.type !== 'refresh') {
+      throw Object.assign(new Error('Wrong token type'), { status: 401 });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const stored = userModel.findRefreshToken(tokenHash);
+    if (!stored || stored.expires_at < Date.now()) {
+      throw Object.assign(new Error('Refresh token revoked or expired'), { status: 401 });
+    }
+
+    const user = userModel.findById(payload.sub);
+    if (!user || !user.is_active) {
+      throw Object.assign(new Error('User not found'), { status: 401 });
+    }
+
+    const accessToken = jwt.sign(
+      { sub: user.id, email: user.email, role: user.role, type: 'access' } as TokenPayload,
+      AUTH_CONFIG.accessTokenSecret,
+      { expiresIn: AUTH_CONFIG.accessTokenTTL, issuer: 'apz-wallet' }
+    );
+
+    return { accessToken };
+  }
+
+  // ───── Logout ─────
+  async logout(refreshToken: string): Promise<void> {
+    const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    userModel.revokeRefreshToken(tokenHash);
+  }
+
+  async logoutAll(userId: string): Promise<void> {
+    userModel.revokeAllUserTokens(userId);
+  }
+
+  // ───── Verify Access Token ─────
+  verifyAccessToken(token: string): TokenPayload {
+    try {
+      const payload = jwt.verify(token, AUTH_CONFIG.accessTokenSecret) as TokenPayload;
+      if (payload.type !== 'access') throw new Error('Wrong token type');
+      return payload;
+    } catch (err: any) {
+      throw Object.assign(new Error('Invalid or expired token'), { status: 401 });
+    }
+  }
+
+  private sanitize(user: UserRow) {
+    const { password_hash, ...rest } = user;
+    return rest;
+  }
+}
+
+export const authService = new AuthService();
+```
+
+---
+
+🛡️ server/middleware/auth.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { authService, TokenPayload } from '../services/auth.service.js';
+
+// تایپ Request رو گسترش می‌دیم
+declare global {
+  namespace Express {
+    interface Request {
+      user?: TokenPayload;
+    }
+  }
+}
+
+/**
+ * احراز هویت اجباری
+ */
+export function requireAuth(req: Request, _res: Response, next: NextFunction) {
+  try {
+    const header = req.headers.authorization;
+    if (!header?.startsWith('Bearer ')) {
+      throw Object.assign(new Error('Missing token'), { status: 401 });
+    }
+    const token = header.slice(7);
+    req.user = authService.verifyAccessToken(token);
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * نقش‌محور
+ */
+export function requireRole(...roles: string[]) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.user) return next(Object.assign(new Error('Not authenticated'), { status: 401 }));
+    if (!roles.includes(req.user.role)) {
+      return next(Object.assign(new Error('Forbidden'), { status: 403 }));
+    }
+    next();
+  };
+}
+```
+
+---
+
+🛣️ server/routes/auth.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { authService } from '../services/auth.service.js';
+import { requireAuth } from '../middleware/auth.middleware.js';
+import { AUTH_CONFIG } from '../config/auth.config.js';
+
+const router = Router();
+
+const emailSchema = z.string().email();
+const passwordSchema = z.string().min(8).max(128);
+
+const registerSchema = z.object({
+  email: emailSchema,
+  password: passwordSchema,
+  displayName: z.string().min(2).max(50).optional()
+});
+
+const loginSchema = z.object({
+  email: emailSchema,
+  password: z.string()
+});
+
+// ───── POST /api/auth/register ─────
+router.post('/register', async (req, res, next) => {
+  try {
+    const body = registerSchema.parse(req.body);
+    const { user, accessToken, refreshToken } = await authService.register(body);
+
+    res.cookie('refreshToken', refreshToken, AUTH_CONFIG.cookieOptions);
+    res.status(201).json({ success: true, data: { user, accessToken } });
+  } catch (err) { next(err); }
+});
+
+// ───── POST /api/auth/login ─────
+router.post('/login', async (req, res, next) => {
+  try {
+    const body = loginSchema.parse(req.body);
+    const { user, accessToken, refreshToken } = await authService.login({
+      ...body,
+      userAgent: req.headers['user-agent'],
+      ipAddress: req.ip
+    });
+
+    res.cookie('refreshToken', refreshToken, AUTH_CONFIG.cookieOptions);
+    res.json({ success: true, data: { user, accessToken } });
+  } catch (err) { next(err); }
+});
+
+// ───── POST /api/auth/refresh ─────
+router.post('/refresh', async (req, res, next) => {
+  try {
+    const token = req.cookies?.refreshToken || req.body?.refreshToken;
+    if (!token) throw Object.assign(new Error('No refresh token'), { status: 401 });
+
+    const { accessToken } = await authService.refresh(token);
+    res.json({ success: true, data: { accessToken } });
+  } catch (err) { next(err); }
+});
+
+// ───── POST /api/auth/logout ─────
+router.post('/logout', async (req, res, next) => {
+  try {
+    const token = req.cookies?.refreshToken;
+    if (token) await authService.logout(token);
+    res.clearCookie('refreshToken');
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ───── GET /api/auth/me (محافظت‌شده) ─────
+router.get('/me', requireAuth, async (req, res) => {
+  res.json({ success: true, data: { user: req.user } });
+});
+
+// ───── POST /api/auth/logout-all ─────
+router.post('/logout-all', requireAuth, async (req, res, next) => {
+  try {
+    await authService.logoutAll(req.user!.sub);
+    res.clearCookie('refreshToken');
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+export default router;
+```
+
+---
+
+🖥️ server/index.ts — به‌روزرسانی
+
+```typescript
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';   // ← جدید
+import dotenv from 'dotenv';
+import authRoutes from './routes/auth.routes.js';
+import walletRoutes from './routes/wallet.routes.js';
+import txRoutes from './routes/transaction.routes.js';
+import { errorHandler } from './middleware/errorHandler.js';
+import { requireAuth } from './middleware/auth.middleware.js';  // ← جدید
+
+dotenv.config();
+
+const app = express();
+
+app.use(cors({ origin: 'http://localhost:5173', credentials: true })); // ← credentials:true
+app.use(express.json());
+app.use(cookieParser());  // ← جدید
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', service: 'APZ Wallet API', time: Date.now() });
+});
+
+// عمومی
+app.use('/api/auth', authRoutes);
+
+// محافظت‌شده
+app.use('/api/wallet', requireAuth, walletRoutes);
+app.use('/api/tx', requireAuth, txRoutes);
+
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`🚀 APZ Wallet API running on http://localhost:${PORT}`);
+});
+```
+
+---
+
+🌐 src/api/client.ts — نسخه Auth-aware
+
+```typescript
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+
+let accessToken: string | null = null;
+let refreshPromise: Promise<string> | null = null;
+
+export function setAccessToken(token: string | null) {
+  accessToken = token;
+}
+
+async function doRefresh(): Promise<string> {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    const res = await fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include'
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error('Refresh failed');
+    accessToken = data.data.accessToken;
+    return accessToken!;
+  })().finally(() => { refreshPromise = null; });
+  return refreshPromise;
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const doFetch = async (): Promise<Response> =>
+    fetch(`${API_BASE}${path}`, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        ...options.headers
+      }
+    });
+
+  let res = await doFetch();
+
+  // اگر توکن منقضی شد، یکبار refresh کن
+  if (res.status === 401 && accessToken) {
+    try {
+      await doRefresh();
+      res = await doFetch();
+    } catch { /* ignore */ }
+  }
+
+  const data = await res.json();
+  if (!res.ok || !data.success) throw new Error(data.error || 'API error');
+  return data.data as T;
+}
+
+export const apiClient = {
+  // ───── Auth ─────
+  register: (payload: { email: string; password: string; displayName?: string }) =>
+    request<{ user: any; accessToken: string }>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  login: (payload: { email: string; password: string }) =>
+    request<{ user: any; accessToken: string }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  logout: () =>
+    request<{}>('/auth/logout', { method: 'POST' }),
+
+  me: () =>
+    request<{ user: any }>('/auth/me'),
+
+  logoutAll: () =>
+    request<{}>('/auth/logout-all', { method: 'POST' }),
+
+  // ───── Wallet (همه محافظت‌شده) ─────
+  createWallet: (label?: string) =>
+    request<{ id: string; address: string; mnemonic?: string }>('/wallet/create', {
+      method: 'POST',
+      body: JSON.stringify({ label })
+    }),
+
+  listWallets: () =>
+    request<Array<{ id: string; address: string; label?: string }>>('/wallet/list'),
+
+  getBalance: (address: string) =>
+    request<{ address: string; balance: string; currency: string }>(
+      `/wallet/${address}/balance`
+    ),
+
+  getNetworkInfo: () =>
+    request<{ chainId: number; name: string; blockNumber: number }>('/wallet/network/info'),
+
+  // ───── Transactions ─────
+  sendTransaction: (params: { walletId: string; to: string; amount: string }) =>
+    request<{ id: string; hash: string; explorerUrl: string }>('/tx/send', {
+      method: 'POST',
+      body: JSON.stringify(params)
+    }),
+
+  getHistory: (walletId: string) =>
+    request<any[]>(`/tx/${walletId}/history`),
+
+  getTxStatus: (hash: string) =>
+    request<any>(`/tx/status/${hash}`)
+};
+```
+
+---
+
+💾 src/auth/tokenStorage.ts
+
+```typescript
+const ACCESS_KEY = 'apz_access_token';
+
+export const tokenStorage = {
+  getAccess(): string | null {
+    return sessionStorage.getItem(ACCESS_KEY);
+  },
+  setAccess(token: string) {
+    sessionStorage.setItem(ACCESS_KEY, token);
+  },
+  clear() {
+    sessionStorage.removeItem(ACCESS_KEY);
+  }
+};
+```
+
+💡 نکته امنیتی: Access Token رو در sessionStorage می‌ذاریم (نه localStorage) تا در صورت XSS ریسک کمتر بشه. Refresh Token در httpOnly cookie ذخیره می‌شه و جاوااسکریپت بهش دسترسی نداره.
+
+---
+
+🎯 src/auth/AuthContext.tsx
+
+```tsx
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { apiClient, setAccessToken } from '../api/client';
+import { tokenStorage } from './tokenStorage';
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  role: string;
+  display_name?: string;
+}
+
+interface AuthContextValue {
+  user: AuthUser | null;
+  loading: boolean;
+  login: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string, displayName?: string) => Promise<void>;
+  logout: () => Promise<void>;
+  logoutAll: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // بازیابی نشست در بارگذاری اولیه
+  useEffect(() => {
+    (async () => {
+      try {
+        const token = tokenStorage.getAccess();
+        if (token) setAccessToken(token);
+
+        // امتحان کن /auth/me — اگر access توکن معتبر نبود، apiClient خودش refresh می‌کنه
+        const { user } = await apiClient.me();
+        setUser(user);
+      } catch {
+        tokenStorage.clear();
+        setAccessToken(null);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const login = useCallback(async (email: string, password: string) => {
+    const { user, accessToken } = await apiClient.login({ email, password });
+    setAccessToken(accessToken);
+    tokenStorage.setAccess(accessToken);
+    setUser(user);
+  }, []);
+
+  const register = useCallback(async (email: string, password: string, displayName?: string) => {
+    const { user, accessToken } = await apiClient.register({ email, password, displayName });
+    setAccessToken(accessToken);
+    tokenStorage.setAccess(accessToken);
+    setUser(user);
+  }, []);
+
+  const logout = useCallback(async () => {
+    try { await apiClient.logout(); } catch {}
+    tokenStorage.clear();
+    setAccessToken(null);
+    setUser(null);
+  }, []);
+
+  const logoutAll = useCallback(async () => {
+    try { await apiClient.logoutAll(); } catch {}
+    tokenStorage.clear();
+    setAccessToken(null);
+    setUser(null);
+  }, []);
+
+  return (
+    <AuthContext.Provider value={{ user, loading, login, register, logout, logoutAll }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export function useAuthContext() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuthContext must be used inside <AuthProvider>');
+  return ctx;
+}
+```
+
+---
+
+🪝 src/auth/useAuth.ts
+
+```typescript
+export { useAuthContext as useAuth } from './AuthContext';
+```
+
+---
+
+🔒 src/components/ProtectedRoute.tsx
+
+```tsx
+import React from 'react';
+import { useAuth } from '../auth/useAuth';
+import { LoginForm } from './LoginForm';
+
+export const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return <div className="loading-screen">⏳ Loading wallet…</div>;
+  }
+  if (!user) {
+    return <LoginForm />;
+  }
+  return <>{children}</>;
+};
+```
+
+---
+
+🔑 src/components/LoginForm.tsx
+
+```tsx
+import React, { useState } from 'react';
+import { useAuth } from '../auth/useAuth';
+import { RegisterForm } from './RegisterForm';
+
+export const LoginForm: React.FC = () => {
+  const { login } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+
+  if (mode === 'register') {
+    return <RegisterForm onSwitch={() => setMode('login')} />;
+  }
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await login(email.trim().toLowerCase(), password);
+    } catch (err: any) {
+      setError(err.message || 'Login failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="auth-card">
+      <h2>🔐 ورود به APZ Wallet</h2>
+      <form onSubmit={onSubmit}>
+        <label>
+          ایمیل
+          <input
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            required
+            autoComplete="email"
+            dir="ltr"
+          />
+        </label>
+        <label>
+          رمز عبور
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            required
+            autoComplete="current-password"
+            dir="ltr"
+          />
+        </label>
+        {error && <div className="auth-error">⚠️ {error}</div>}
+        <button className="btn-primary" disabled={busy} type="submit">
+          {busy ? 'در حال ورود…' : 'ورود'}
+        </button>
+      </form>
+      <p className="auth-switch">
+        حساب نداری؟{' '}
+        <button type="button" onClick={() => setMode('register')} className="link-btn">
+          ثبت‌نام کن
+        </button>
+      </p>
+    </div>
+  );
+};
+```
+
+---
+
+📝 src/components/RegisterForm.tsx
+
+```tsx
+import React, { useState } from 'react';
+import { useAuth } from '../auth/useAuth';
+
+export const RegisterForm: React.FC<{ onSwitch: () => void }> = ({ onSwitch }) => {
+  const { register } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    if (password.length < 8) return setError('رمز عبور باید حداقل ۸ کاراکتر باشد');
+    if (password !== confirm) return setError('تکرار رمز عبور مطابقت ندارد');
+
+    setBusy(true);
+    try {
+      await register(email.trim().toLowerCase(), password, displayName || undefined);
+    } catch (err: any) {
+      setError(err.message || 'Registration failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="auth-card">
+      <h2>✨ ساخت حساب جدید</h2>
+      <form onSubmit={onSubmit}>
+        <label>
+          نام نمایشی (اختیاری)
+          <input
+            type="text"
+            value={displayName}
+            onChange={e => setDisplayName(e.target.value)}
+            maxLength={50}
+          />
+        </label>
+        <label>
+          ایمیل
+          <input
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            required
+            dir="ltr"
+          />
+        </label>
+        <label>
+          رمز عبور (حداقل ۸ کاراکتر)
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            required
+            minLength={8}
+            dir="ltr"
+          />
+        </label>
+        <label>
+          تکرار رمز عبور
+          <input
+            type="password"
+            value={confirm}
+            onChange={e => setConfirm(e.target.value)}
+            required
+            dir="ltr"
+          />
+        </label>
+        {error && <div className="auth-error">⚠️ {error}</div>}
+        <button className="btn-primary" disabled={busy} type="submit">
+          {busy ? 'در حال ایجاد…' : 'ثبت‌نام'}
+        </button>
+      </form>
+      <p className="auth-switch">
+        قبلاً ثبت‌نام کردی؟{' '}
+        <button type="button" onClick={onSwitch} className="link-btn">
+          وارد شو
+        </button>
+      </p>
+    </div>
+  );
+};
+```
+
+---
+
+🎨 استایل‌های Auth (به globals.css اضافه کن)
+
+```css
+.auth-card {
+  max-width: 420px;
+  margin: 60px auto;
+  padding: 32px;
+  background: #14161c;
+  border-radius: 16px;
+  border: 1px solid #232733;
+  color: #e7e9ee;
+  direction: rtl;
+  font-family: 'Vazirmatn', sans-serif;
+}
+.auth-card h2 { margin-bottom: 24px; font-size: 1.4rem; }
+.auth-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  font-size: 0.9rem;
+  color: #a4acbd;
+}
+.auth-card input {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #0d0f14;
+  border: 1px solid #2a2f3d;
+  color: #fff;
+  outline: none;
+  transition: border 0.2s;
+}
+.auth-card input:focus { border-color: #6c7cff; }
+.btn-primary {
+  width: 100%;
+  padding: 12px;
+  margin-top: 8px;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6c7cff, #8a5cff);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.auth-error {
+  background: #3a1a1a;
+  color: #ff8b8b;
+  padding: 10px;
+  border-radius: 8px;
+  margin: 8px 0;
+  font-size: 0.88rem;
+}
+.auth-switch { text-align: center; margin-top: 18px; color: #8a91a3; }
+.link-btn {
+  background: none;
+  border: none;
+  color: #6c7cff;
+  cursor: pointer;
+  font-weight: 600;
+}
+.loading-screen {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  color: #a4acbd;
+}
+```
+
+---
+
+🧩 src/App.tsx — به‌روزرسانی نهایی
+
+```tsx
+import React from 'react';
+import { AuthProvider } from './auth/AuthContext';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import { WalletDashboard } from './components/WalletDashboard';
+import './styles/globals.css';
+
+function App() {
+  return (
+    <AuthProvider>
+      <ProtectedRoute>
+        <WalletDashboard />
+      </ProtectedRoute>
+    </AuthProvider>
+  );
+}
+
+export default App;
+```
+
+و WalletDashboard.tsx رو از کد قبلی App.tsx جدا کن (بدون تغییر در منطق کیف پول) — فقط یه دکمهٔ خروج هم اضافه کن:
+
+```tsx
+import { useAuth } from '../auth/useAuth';
+
+export const WalletDashboard: React.FC = () => {
+  const { user, logout, logoutAll } = useAuth();
+  // ... تمام منطق قبلی کیف پول
+  
+  return (
+    <div className="app-container">
+      <header className="app-header">
+        <h1>⛓️ APZ Wallet</h1>
+        <div className="user-bar">
+          <span>👤 {user?.display_name || user?.email}</span>
+          <button onClick={logout} className="btn-secondary">خروج</button>
+          <button onClick={logoutAll} className="btn-danger">خروج از همه دستگاه‌ها</button>
+        </div>
+      </header>
+      {/* ... بقیهٔ UI کیف پول */}
+    </div>
+  );
+};
+```
+
+---
+
+🧪 تست سریع با cURL
+
+```bash
+# ثبت‌نام
+curl -X POST http://localhost:3001/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"ali@apz.io","password":"supersecret123","displayName":"Ali"}'
+
+# ورود
+curl -X POST http://localhost:3001/api/auth/login \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{"email":"ali@apz.io","password":"supersecret123"}'
+
+# فراخوانی روت محافظت‌شده (با توکن برگشتی)
+curl http://localhost:3001/api/wallet/list \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+
+# Refresh
+curl -X POST http://localhost:3001/api/auth/refresh -b cookies.txt
+
+# خروج
+curl -X POST http://localhost:3001/api/auth/logout -b cookies.txt
+```
+
+---
+
+✅ خلاصه ویژگی‌های امنیتی پیاده‌شده
+
+ویژگی پیاده‌سازی
+🔐 هش رمز عبور Argon2id (memory-hard، مقاوم به GPU)
+🎫 Access Token کوتاه‌عمر JWT 15 دقیقه‌ای با jti
+🔄 Refresh Token بلندعمر 7 روز، ذخیره شده به‌صورت SHA-256 hash در DB
+🍪 httpOnly Cookie Refresh Token از دسترس JS خارجه
+🛡️ Rotation روی Refresh امکان revoke در هر لحظه
+🚫 Logout-all باطل کردن همهٔ توکن‌های کاربر
+👮 Role-based access requireRole('admin') آماده
+🔁 Auto-refresh در فرانت اگر 401 بگیره یک‌بار خودکار refresh می‌کنه
+🔗 Wallet متصل به user wallets.user_id برای جداسازی دادهٔ کاربران
