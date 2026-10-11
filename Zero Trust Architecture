@@ -1,0 +1,2245 @@
+🗂️ ساختار اضافهشده
+
+```text
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── zeroTrust.config.ts                ← جدید
+│   ├── services/
+│   │   ├── trustScore.service.ts              ← جدید (هسته)
+│   │   ├── deviceTrust.service.ts             ← جدید
+│   │   ├── sessionBinding.service.ts          ← جدید
+│   │   ├── policyEngine.service.ts            ← جدید (PDP)
+│   │   ├── jitAccess.service.ts               ← جدید
+│   │   └── stepUpAuth.service.ts              ← جدید
+│   ├── middleware/
+│   │   ├── zeroTrust.middleware.ts            ← جدید
+│   │   ├── continuousVerification.middleware.ts  ← جدید
+│   │   └── stepUpAuth.middleware.ts           ← جدید
+│   └── routes/
+│       ├── zerotrust.routes.ts                ← جدید (admin)
+│       └── device.routes.ts                   ← جدید
+└── src/
+    ├── zeroTrust/
+    │   ├── deviceAttestation.ts               ← جدید (کلاینت)
+    │   └── useTrustScore.ts                   ← جدید (hook)
+    └── components/
+        ├── StepUpAuthModal.tsx                ← جدید
+        ├── DeviceTrustPage.tsx                ← جدید
+        └── admin/
+            └── ZeroTrustPanel.tsx             ← جدید
+```
+
+---
+
+🧠 اصول ZTA در APZ Wallet
+
+اصل NIST 800-207 پیاده‌سازی
+Verify Explicitly Trust Score از 12+ منبع، هر درخواست مجدد چک میشه
+Least Privilege JIT grants با TTL، per-route policies
+Assume Breach Session binding، device attestation، micro-segmentation
+Continuous Evaluation Trust decay، re-verification هر 5 دقیقه
+Context-Aware ترکیب device + network + behavior + threat intel
+
+---
+
+📦 نصب پکیجها
+
+```bash
+npm install speakeasy speakeasy-u2f jose
+```
+
+💡 jose برای امضای device tokens (JWS)، speakeasy برای TOTP در step-up auth.
+
+---
+
+⚙️ .env.example — اضافه کن
+
+```env
+# ───── Zero Trust ─────
+ZTA_ENABLED=true
+# آستانه trust score (0-100) — پایین‌تر = deny
+ZTA_TRUST_THRESHOLD=50
+# آستانه step-up (بین این و threshold → درخواست تأیید اضافه)
+ZTA_STEPUP_THRESHOLD=70
+# فاصله re-verification (ثانیه)
+ZTA_REVERIFY_INTERVAL=300
+# حداکثر عمر session binding (ساعت)
+ZTA_SESSION_MAX_AGE_HOURS=24
+# حداکثر تعداد IP مختلف برای یک session
+ZTA_SESSION_MAX_IPS=3
+
+# ───── Device Trust ─────
+DEVICE_TRUST_REQUIRED=false
+DEVICE_MAX_AGE_DAYS=90
+DEVICE_TOKEN_SECRET=change-me-please-use-a-long-random-string
+
+# ───── JIT Access ─────
+JIT_MAX_DURATION_MINUTES=60
+JIT_DEFAULT_DURATION_MINUTES=15
+
+# ───── mTLS (اختیاری) ─────
+MTLS_ENABLED=false
+MTLS_CA_PATH=
+```
+
+---
+
+⚙️ server/config/zeroTrust.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const ZTA_CONFIG = {
+  enabled: process.env.ZTA_ENABLED === 'true',
+  trustThreshold: Number(process.env.ZTA_TRUST_THRESHOLD || 50),
+  stepUpThreshold: Number(process.env.ZTA_STEPUP_THRESHOLD || 70),
+  reverifyIntervalMs: Number(process.env.ZTA_REVERIFY_INTERVAL || 300) * 1000,
+  sessionMaxAgeMs: Number(process.env.ZTA_SESSION_MAX_AGE_HOURS || 24) * 3600 * 1000,
+  sessionMaxIps: Number(process.env.ZTA_SESSION_MAX_IPS || 3),
+
+  device: {
+    required: process.env.DEVICE_TRUST_REQUIRED === 'true',
+    maxAgeMs: Number(process.env.DEVICE_MAX_AGE_DAYS || 90) * 86400 * 1000,
+    tokenSecret: process.env.DEVICE_TOKEN_SECRET || 'CHANGE_ME_DEVICE_SECRET',
+    tokenTtl: '30d'
+  },
+
+  jit: {
+    maxDurationMs: Number(process.env.JIT_MAX_DURATION_MINUTES || 60) * 60 * 1000,
+    defaultDurationMs: Number(process.env.JIT_DEFAULT_DURATION_MINUTES || 15) * 60 * 1000
+  },
+
+  // ═══════════════════════════════════════════
+  //  Trust Score Weights (جمع ~100)
+  // ═══════════════════════════════════════════
+  weights: {
+    // ─── Device (30) ───
+    deviceRegistered: 15,          // دستگاه شناخته‌شده
+    deviceTrusted: 10,             // تأیید شده توسط کاربر
+    devicePostureOk: 5,            // OS به‌روز، رمزنگاری فعال
+
+    // ─── Session (20) ───
+    sessionBound: 10,              // bind شده به device+ip
+    sessionFresh: 5,               // < 1 ساعت
+    noIpChange: 5,                 // IP تغییر نکرده
+
+    // ─── Network (20) ───
+    knownIp: 5,
+    notVpn: 5,
+    notTor: 5,
+    geoConsistent: 5,
+
+    // ─── Behavior (15) ───
+    normalBehavior: 10,
+    noAnomalies: 5,
+
+    // ─── Threat (15) ───
+    cleanThreat: 10,
+    notBot: 5
+  },
+
+  // ═══════════════════════════════════════════
+  //  Trust Decay
+  // ═══════════════════════════════════════════
+  decay: {
+    perHourIdleMs: 5,              // هر ساعت بی‌فعالیتی -5
+    perAnomalyPenalty: 15,
+    perFailPenalty: 10
+  },
+
+  // ═══════════════════════════════════════════
+  //  Sensitive Routes (نیاز به trust بالاتر)
+  // ═══════════════════════════════════════════
+  sensitiveRoutes: [
+    { pattern: '^/api/wallet/create', minTrust: 80 },
+    { pattern: '^/api/tx/send', minTrust: 85 },
+    { pattern: '^/api/auth/logout-all', minTrust: 70 },
+    { pattern: '^/api/2fa/disable', minTrust: 90 },
+    { pattern: '^/api/admin', minTrust: 95 }
+  ]
+} as const;
+```
+
+---
+
+🗄️ به‌روزرسانی server/services/db.service.ts
+
+```typescript
+db.exec(`
+  -- ───── Devices ─────
+  CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    device_fingerprint TEXT NOT NULL,           -- hash ترکیب اطلاعات دستگاه
+    device_name TEXT,
+    device_type TEXT,                           -- 'mobile' | 'desktop' | 'tablet'
+    os TEXT,
+    os_version TEXT,
+    browser TEXT,
+    browser_version TEXT,
+    is_trusted INTEGER NOT NULL DEFAULT 0,
+    is_blocked INTEGER NOT NULL DEFAULT 0,
+    trust_level TEXT NOT NULL DEFAULT 'new',    -- 'new' | 'trusted' | 'suspended'
+    posture_score INTEGER DEFAULT 0,            -- 0-100
+    posture_details TEXT,                       -- JSON
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    last_ip TEXT,
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, device_fingerprint)
+  );
+  CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
+  CREATE INDEX IF NOT EXISTS idx_devices_fp ON devices(device_fingerprint);
+  CREATE INDEX IF NOT EXISTS idx_devices_trust ON devices(is_trusted, is_blocked);
+
+  -- ───── Session Bindings ─────
+  CREATE TABLE IF NOT EXISTS session_bindings (
+    session_id TEXT PRIMARY KEY,                -- = jti از access token
+    user_id TEXT NOT NULL,
+    device_id TEXT,
+    bound_ip TEXT,
+    bound_ua TEXT,
+    bound_fingerprint TEXT,
+    ip_history TEXT,                            -- JSON array
+    trust_score INTEGER NOT NULL DEFAULT 0,
+    trust_level TEXT NOT NULL DEFAULT 'low',
+    last_evaluated_at INTEGER NOT NULL,
+    anomaly_count INTEGER NOT NULL DEFAULT 0,
+    is_valid INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON session_bindings(user_id, is_valid);
+  CREATE INDEX IF NOT EXISTS idx_sessions_valid ON session_bindings(is_valid, expires_at);
+
+  -- ───── Trust Evaluations ─────
+  CREATE TABLE IF NOT EXISTS trust_evaluations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    session_id TEXT,
+    ip_address TEXT,
+    trust_score INTEGER NOT NULL,
+    trust_level TEXT NOT NULL,
+    components TEXT,                            -- JSON با جزئیات هر جزء
+    triggered_action TEXT,                      -- 'allow' | 'step_up' | 'deny'
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_trust_user ON trust_evaluations(user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_trust_session ON trust_evaluations(session_id, created_at);
+
+  -- ───── JIT Access Grants ─────
+  CREATE TABLE IF NOT EXISTS jit_grants (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    resource TEXT NOT NULL,                     -- pattern مثل '/api/admin/*'
+    permissions TEXT,                           -- JSON array
+    reason TEXT,
+    granted_by TEXT,
+    granted_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_jit_user ON jit_grants(user_id, is_active, expires_at);
+
+  -- ───── Step-up Challenges ─────
+  CREATE TABLE IF NOT EXISTS step_up_challenges (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT,
+    reason TEXT NOT NULL,                       -- 'sensitive_action' | 'low_trust' | 'anomaly'
+    method TEXT NOT NULL,                       -- 'totp' | 'password' | 'email_otp'
+    required_trust INTEGER,
+    solved_at INTEGER,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_stepup_session ON step_up_challenges(session_id, solved_at);
+
+  -- ───── Zero Trust Policy Rules ─────
+  CREATE TABLE IF NOT EXISTS zt_policies (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    route_pattern TEXT NOT NULL,
+    method TEXT,                                -- NULL = همه
+    min_trust INTEGER NOT NULL DEFAULT 50,
+    require_device_trust INTEGER NOT NULL DEFAULT 0,
+    require_mfa INTEGER NOT NULL DEFAULT 0,
+    require_jit INTEGER NOT NULL DEFAULT 0,
+    allowed_roles TEXT,                         -- JSON array
+    conditions TEXT,                            -- JSON
+    priority INTEGER NOT NULL DEFAULT 100,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_zt_policies ON zt_policies(enabled, priority);
+`);
+```
+
+---
+
+🧮 server/services/trustScore.service.ts — هسته ZTA
+
+```typescript
+import db from './db.service.js';
+import { ZTA_CONFIG } from '../config/zeroTrust.config.js';
+import { deviceTrustService } from './deviceTrust.service.js';
+
+export interface TrustInput {
+  userId: string;
+  sessionId?: string;
+  ip: string;
+  userAgent: string;
+  deviceFingerprint?: string;
+  geo?: { country?: string; city?: string };
+  vpn?: { riskScore: number; isTor: boolean };
+  bot?: { riskScore: number; isBot: boolean };
+  threat?: { riskScore: number; isMalicious: boolean };
+}
+
+export interface TrustComponents {
+  device: number;
+  session: number;
+  network: number;
+  behavior: number;
+  threat: number;
+}
+
+export interface TrustResult {
+  score: number;                              // 0-100
+  level: 'critical' | 'low' | 'medium' | 'high' | 'verified';
+  components: TrustComponents;
+  action: 'allow' | 'step_up' | 'deny';
+  reasons: string[];
+  sessionValid: boolean;
+}
+
+export class TrustScoreService {
+  /**
+   * محاسبه امتیاز اعتماد کامل
+   */
+  async evaluate(input: TrustInput): Promise<TrustResult> {
+    const W = ZTA_CONFIG.weights;
+    const components: TrustComponents = { device: 0, session: 0, network: 0, behavior: 0, threat: 0 };
+    const reasons: string[] = [];
+    let sessionValid = true;
+
+    // ═══════════════════════════════════════════
+    //  1. DEVICE (max 30)
+    // ═══════════════════════════════════════════
+    if (input.deviceFingerprint) {
+      const device = deviceTrustService.findByFingerprint(input.userId, input.deviceFingerprint);
+
+      if (device) {
+        if (!device.is_blocked) {
+          components.device += W.deviceRegistered;
+          reasons.push('device_registered');
+        } else {
+          reasons.push('device_blocked');
+          sessionValid = false;
+        }
+
+        if (device.is_trusted) {
+          components.device += W.deviceTrusted;
+          reasons.push('device_trusted');
+        }
+
+        if (device.posture_score >= 70) {
+          components.device += W.devicePostureOk;
+          reasons.push('posture_ok');
+        } else if (device.posture_score < 40) {
+          reasons.push('posture_poor');
+        }
+      } else {
+        reasons.push('device_unknown');
+        // امتیاز device صفر می‌مونه
+      }
+    } else {
+      reasons.push('no_device_fingerprint');
+    }
+
+    // ═══════════════════════════════════════════
+    //  2. SESSION (max 20)
+    // ═══════════════════════════════════════════
+    if (input.sessionId) {
+      const session = db.prepare('SELECT * FROM session_bindings WHERE session_id = ?')
+        .get(input.sessionId) as any;
+
+      if (session && session.is_valid === 1 && session.expires_at > Date.now()) {
+        components.session += W.sessionBound;
+        reasons.push('session_bound');
+
+        const age = Date.now() - session.created_at;
+        if (age < 3600_000) {
+          components.session += W.sessionFresh;
+          reasons.push('session_fresh');
+        }
+
+        // چک IP change
+        const ips: string[] = JSON.parse(session.ip_history || '[]');
+        if (ips.includes(input.ip)) {
+          components.session += W.noIpChange;
+          reasons.push('ip_consistent');
+        } else if (ips.length >= ZTA_CONFIG.sessionMaxIps) {
+          reasons.push('too_many_ips');
+          sessionValid = false;
+        } else {
+          reasons.push('new_ip_in_session');
+        }
+      } else {
+        reasons.push('session_invalid');
+        sessionValid = false;
+      }
+    } else {
+      reasons.push('no_session_id');
+    }
+
+    // ═══════════════════════════════════════════
+    //  3. NETWORK (max 20)
+    // ═══════════════════════════════════════════
+    const device = input.deviceFingerprint
+      ? deviceTrustService.findByFingerprint(input.userId, input.deviceFingerprint)
+      : null;
+
+    if (device?.last_ip === input.ip) {
+      components.network += W.knownIp;
+      reasons.push('known_ip');
+    }
+
+    if (!input.vpn || input.vpn.riskScore < 40) {
+      components.network += W.notVpn;
+      reasons.push('not_vpn');
+    } else {
+      reasons.push(`vpn_risk_${input.vpn.riskScore}`);
+    }
+
+    if (!input.vpn?.isTor) {
+      components.network += W.notTor;
+      reasons.push('not_tor');
+    } else {
+      reasons.push('tor_exit');
+    }
+
+    if (input.geo?.country && device?.last_ip) {
+      components.network += W.geoConsistent;
+      reasons.push('geo_present');
+    }
+
+    // ═══════════════════════════════════════════
+    //  4. BEHAVIOR (max 15)
+    // ═══════════════════════════════════════════
+    if (!input.bot || input.bot.riskScore < 30) {
+      components.behavior += W.normalBehavior;
+      reasons.push('behavior_normal');
+    } else {
+      reasons.push(`bot_risk_${input.bot.riskScore}`);
+    }
+
+    if (!input.bot?.isBot) {
+      components.behavior += W.noAnomalies;
+      reasons.push('no_bot_flags');
+    }
+
+    // ═══════════════════════════════════════════
+    //  5. THREAT (max 15)
+    // ═══════════════════════════════════════════
+    if (!input.threat || input.threat.riskScore < 30) {
+      components.threat += W.cleanThreat;
+      reasons.push('threat_clean');
+    } else {
+      reasons.push(`threat_risk_${input.threat.riskScore}`);
+    }
+
+    if (!input.threat?.isMalicious) {
+      components.threat += W.notBot;
+      reasons.push('not_malicious');
+    }
+
+    // ═══════════════════════════════════════════
+    //  Trust Decay
+    // ═══════════════════════════════════════════
+    let decay = 0;
+    if (input.sessionId) {
+      const session = db.prepare('SELECT last_evaluated_at FROM session_bindings WHERE session_id = ?')
+        .get(input.sessionId) as any;
+      if (session) {
+        const idleHours = (Date.now() - session.last_evaluated_at) / 3600_000;
+        decay = Math.floor(idleHours) * ZTA_CONFIG.decay.perHourIdleMs;
+      }
+    }
+
+    // ═══════════════════════════════════════════
+    //  Final
+    // ═══════════════════════════════════════════
+    let rawScore =
+      components.device + components.session + components.network +
+      components.behavior + components.threat;
+
+    rawScore = Math.max(0, Math.min(100, rawScore - decay));
+
+    if (!sessionValid) rawScore = Math.min(rawScore, 20); // session مشکوک → سقف
+
+    const level = this.scoreToLevel(rawScore);
+    const action = this.decideAction(rawScore);
+
+    // ذخیره evaluation
+    db.prepare(`
+      INSERT INTO trust_evaluations 
+        (id, user_id, session_id, ip_address, trust_score, trust_level, components, triggered_action, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      input.userId,
+      input.sessionId || null,
+      input.ip,
+      rawScore,
+      level,
+      JSON.stringify({ ...components, decay, sessionValid }),
+      action,
+      Date.now()
+    );
+
+    return { score: rawScore, level, components, action, reasons, sessionValid };
+  }
+
+  private scoreToLevel(score: number): TrustResult['level'] {
+    if (score >= 90) return 'verified';
+    if (score >= 70) return 'high';
+    if (score >= 50) return 'medium';
+    if (score >= 30) return 'low';
+    return 'critical';
+  }
+
+  private decideAction(score: number): 'allow' | 'step_up' | 'deny' {
+    if (score >= ZTA_CONFIG.stepUpThreshold) return 'allow';
+    if (score >= ZTA_CONFIG.trustThreshold) return 'step_up';
+    return 'deny';
+  }
+
+  // ───── برای route های حساس ─────
+  requiresHigherTrust(path: string, method: string): number | null {
+    for (const rule of ZTA_CONFIG.sensitiveRoutes) {
+      if (new RegExp(rule.pattern).test(path)) {
+        return rule.minTrust;
+      }
+    }
+    return null;
+  }
+}
+
+export const trustScoreService = new TrustScoreService();
+```
+
+---
+
+💻 server/services/deviceTrust.service.ts
+
+```typescript
+import crypto from 'crypto';
+import { SignJWT, jwtVerify } from 'jose';
+import db from './db.service.js';
+import { ZTA_CONFIG } from '../config/zeroTrust.config.js';
+
+export interface DeviceRow {
+  id: string;
+  user_id: string;
+  device_fingerprint: string;
+  device_name: string | null;
+  device_type: string | null;
+  os: string | null;
+  os_version: string | null;
+  browser: string | null;
+  browser_version: string | null;
+  is_trusted: number;
+  is_blocked: number;
+  trust_level: string;
+  posture_score: number;
+  posture_details: string | null;
+  first_seen_at: number;
+  last_seen_at: number;
+  last_ip: string | null;
+  seen_count: number;
+}
+
+export class DeviceTrustService {
+  private secret = new TextEncoder().encode(ZTA_CONFIG.device.tokenSecret);
+
+  /**
+   * compute دستگاه از fingerprint خام
+   */
+  computeDeviceId(rawFingerprint: string): string {
+    return crypto
+      .createHash('sha256')
+      .update(rawFingerprint)
+      .digest('hex');
+  }
+
+  /**
+   * ثبت یا به‌روزرسانی دستگاه
+   */
+  upsert(params: {
+    userId: string;
+    fingerprint: string;
+    ip: string;
+    deviceInfo: {
+      name?: string;
+      type?: string;
+      os?: string;
+      osVersion?: string;
+      browser?: string;
+      browserVersion?: string;
+    };
+    posture?: {
+      score: number;
+      details: any;
+    };
+  }): DeviceRow {
+    const fp = this.computeDeviceId(params.fingerprint);
+    const existing = db.prepare('SELECT * FROM devices WHERE user_id = ? AND device_fingerprint = ?')
+      .get(params.userId, fp) as DeviceRow | undefined;
+
+    const now = Date.now();
+
+    if (existing) {
+      db.prepare(`
+        UPDATE devices SET
+          last_seen_at = ?,
+          last_ip = ?,
+          seen_count = seen_count + 1,
+          device_name = COALESCE(?, device_name),
+          device_type = COALESCE(?, device_type),
+          os = COALESCE(?, os),
+          os_version = COALESCE(?, os_version),
+          browser = COALESCE(?, browser),
+          browser_version = COALESCE(?, browser_version),
+          posture_score = COALESCE(?, posture_score),
+          posture_details = COALESCE(?, posture_details)
+        WHERE id = ?
+      `).run(
+        now,
+        params.ip,
+        params.deviceInfo.name || null,
+        params.deviceInfo.type || null,
+        params.deviceInfo.os || null,
+        params.deviceInfo.osVersion || null,
+        params.deviceInfo.browser || null,
+        params.deviceInfo.browserVersion || null,
+        params.posture?.score ?? null,
+        params.posture ? JSON.stringify(params.posture.details) : null,
+        existing.id
+      );
+
+      return db.prepare('SELECT * FROM devices WHERE id = ?').get(existing.id) as DeviceRow;
+    }
+
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO devices 
+        (id, user_id, device_fingerprint, device_name, device_type, os, os_version,
+         browser, browser_version, is_trusted, is_blocked, trust_level, posture_score,
+         posture_details, first_seen_at, last_seen_at, last_ip, seen_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'new', ?, ?, ?, ?, ?, 1)
+    `).run(
+      id,
+      params.userId,
+      fp,
+      params.deviceInfo.name || null,
+      params.deviceInfo.type || null,
+      params.deviceInfo.os || null,
+      params.deviceInfo.osVersion || null,
+      params.deviceInfo.browser || null,
+      params.deviceInfo.browserVersion || null,
+      params.posture?.score ?? 0,
+      params.posture ? JSON.stringify(params.posture.details) : null,
+      now,
+      now,
+      params.ip
+    );
+
+    return db.prepare('SELECT * FROM devices WHERE id = ?').get(id) as DeviceRow;
+  }
+
+  /**
+   * تولید device token (JWS)
+   * این توکن در کلاینت ذخیره میشه و با هر درخواست فرستاده میشه
+   */
+  async issueDeviceToken(params: {
+    userId: string;
+    deviceId: string;
+    fingerprint: string;
+  }): Promise<string> {
+    return new SignJWT({
+      sub: params.userId,
+      did: params.deviceId,
+      fp: this.computeDeviceId(params.fingerprint),
+      type: 'device'
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setIssuer('apz-wallet')
+      .setExpirationTime(ZTA_CONFIG.device.tokenTtl)
+      .sign(this.secret);
+  }
+
+  async verifyDeviceToken(token: string): Promise<{ userId: string; deviceId: string; fp: string } | null> {
+    try {
+      const { payload } = await jwtVerify(token, this.secret, { issuer: 'apz-wallet' });
+      if (payload.type !== 'device') return null;
+      return {
+        userId: payload.sub as string,
+        deviceId: payload.did as string,
+        fp: payload.fp as string
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  findByFingerprint(userId: string, rawFingerprint: string): DeviceRow | undefined {
+    const fp = this.computeDeviceId(rawFingerprint);
+    return db.prepare('SELECT * FROM devices WHERE user_id = ? AND device_fingerprint = ?')
+      .get(userId, fp) as DeviceRow | undefined;
+  }
+
+  findById(id: string): DeviceRow | undefined {
+    return db.prepare('SELECT * FROM devices WHERE id = ?').get(id) as DeviceRow | undefined;
+  }
+
+  listUserDevices(userId: string): DeviceRow[] {
+    return db.prepare('SELECT * FROM devices WHERE user_id = ? ORDER BY last_seen_at DESC')
+      .all(userId) as DeviceRow[];
+  }
+
+  /**
+   * کاربر دستگاه رو trusted می‌کنه
+   */
+  trust(deviceId: string, userId: string) {
+    db.prepare(`
+      UPDATE devices SET is_trusted = 1, trust_level = 'trusted'
+      WHERE id = ? AND user_id = ?
+    `).run(deviceId, userId);
+  }
+
+  untrust(deviceId: string, userId: string) {
+    db.prepare(`
+      UPDATE devices SET is_trusted = 0, trust_level = 'new'
+      WHERE id = ? AND user_id = ?
+    `).run(deviceId, userId);
+  }
+
+  block(deviceId: string, userId: string) {
+    db.prepare(`
+      UPDATE devices SET is_blocked = 1, trust_level = 'suspended'
+      WHERE id = ? AND user_id = ?
+    `).run(deviceId, userId);
+  }
+
+  unblock(deviceId: string, userId: string) {
+    db.prepare(`
+      UPDATE devices SET is_blocked = 0
+      WHERE id = ? AND user_id = ?
+    `).run(deviceId, userId);
+  }
+
+  /**
+   * حذف دستگاه قدیمی (پاکسازی)
+   */
+  cleanup() {
+    const cutoff = Date.now() - ZTA_CONFIG.device.maxAgeMs;
+    const result = db.prepare(`
+      DELETE FROM devices 
+      WHERE last_seen_at < ? AND is_trusted = 0
+    `).run(cutoff);
+    return result.changes;
+  }
+}
+
+export const deviceTrustService = new DeviceTrustService();
+```
+
+---
+
+🔗 server/services/sessionBinding.service.ts
+
+```typescript
+import crypto from 'crypto';
+import db from './db.service.js';
+import { ZTA_CONFIG } from '../config/zeroTrust.config.js';
+
+export interface SessionBindingRow {
+  session_id: string;
+  user_id: string;
+  device_id: string | null;
+  bound_ip: string | null;
+  bound_ua: string | null;
+  bound_fingerprint: string | null;
+  ip_history: string | null;
+  trust_score: number;
+  trust_level: string;
+  last_evaluated_at: number;
+  anomaly_count: number;
+  is_valid: number;
+  created_at: number;
+  expires_at: number;
+}
+
+export class SessionBindingService {
+  bind(params: {
+    sessionId: string;
+    userId: string;
+    deviceId?: string;
+    ip: string;
+    ua: string;
+    fingerprint?: string;
+  }): SessionBindingRow {
+    const existing = db.prepare('SELECT * FROM session_bindings WHERE session_id = ?')
+      .get(params.sessionId) as SessionBindingRow | undefined;
+
+    const now = Date.now();
+
+    if (existing) {
+      // به‌روزرسانی IP history
+      const ips: string[] = JSON.parse(existing.ip_history || '[]');
+      if (!ips.includes(params.ip)) {
+        ips.push(params.ip);
+      }
+
+      db.prepare(`
+        UPDATE session_bindings SET
+          ip_history = ?,
+          last_evaluated_at = ?
+        WHERE session_id = ?
+      `).run(JSON.stringify(ips.slice(-20)), now, params.sessionId);
+
+      return db.prepare('SELECT * FROM session_bindings WHERE session_id = ?')
+        .get(params.sessionId) as SessionBindingRow;
+    }
+
+    db.prepare(`
+      INSERT INTO session_bindings 
+        (session_id, user_id, device_id, bound_ip, bound_ua, bound_fingerprint,
+         ip_history, trust_score, trust_level, last_evaluated_at, anomaly_count,
+         is_valid, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'low', ?, 0, 1, ?, ?)
+    `).run(
+      params.sessionId,
+      params.userId,
+      params.deviceId || null,
+      params.ip,
+      params.ua,
+      params.fingerprint || null,
+      JSON.stringify([params.ip]),
+      now,
+      now,
+      now + ZTA_CONFIG.sessionMaxAgeMs
+    );
+
+    return db.prepare('SELECT * FROM session_bindings WHERE session_id = ?')
+      .get(params.sessionId) as SessionBindingRow;
+  }
+
+  get(sessionId: string): SessionBindingRow | undefined {
+    return db.prepare('SELECT * FROM session_bindings WHERE session_id = ?')
+      .get(sessionId) as SessionBindingRow | undefined;
+  }
+
+  updateTrust(sessionId: string, score: number, level: string) {
+    db.prepare(`
+      UPDATE session_bindings SET
+        trust_score = ?, trust_level = ?, last_evaluated_at = ?
+      WHERE session_id = ?
+    `).run(score, level, Date.now(), sessionId);
+  }
+
+  recordAnomaly(sessionId: string, reason: string) {
+    db.prepare(`
+      UPDATE session_bindings SET
+        anomaly_count = anomaly_count + 1,
+        last_evaluated_at = ?
+      WHERE session_id = ?
+    `).run(Date.now(), sessionId);
+  }
+
+  invalidate(sessionId: string, reason?: string) {
+    db.prepare('UPDATE session_bindings SET is_valid = 0 WHERE session_id = ?')
+      .run(sessionId);
+  }
+
+  invalidateUserSessions(userId: string, except?: string) {
+    if (except) {
+      db.prepare('UPDATE session_bindings SET is_valid = 0 WHERE user_id = ? AND session_id != ?')
+        .run(userId, except);
+    } else {
+      db.prepare('UPDATE session_bindings SET is_valid = 0 WHERE user_id = ?')
+        .run(userId);
+    }
+  }
+
+  cleanup() {
+    const result = db.prepare('DELETE FROM session_bindings WHERE expires_at < ?')
+      .run(Date.now());
+    return result.changes;
+  }
+
+  getActiveSessions(userId: string) {
+    return db.prepare(`
+      SELECT sb.*, d.device_name, d.os, d.browser
+      FROM session_bindings sb
+      LEFT JOIN devices d ON d.id = sb.device_id
+      WHERE sb.user_id = ? AND sb.is_valid = 1 AND sb.expires_at > ?
+      ORDER BY sb.last_evaluated_at DESC
+    `).all(userId, Date.now());
+  }
+}
+
+export const sessionBindingService = new SessionBindingService();
+```
+
+---
+
+🎯 server/services/policyEngine.service.ts — PDP
+
+```typescript
+import db from './db.service.js';
+import { ZTA_CONFIG } from '../config/zeroTrust.config.js';
+
+export interface PolicyRule {
+  id: string;
+  name: string;
+  description: string | null;
+  route_pattern: string;
+  method: string | null;
+  min_trust: number;
+  require_device_trust: number;
+  require_mfa: number;
+  require_jit: number;
+  allowed_roles: string | null;
+  conditions: string | null;
+  priority: number;
+  enabled: number;
+}
+
+export interface PolicyDecision {
+  decision: 'allow' | 'step_up' | 'deny' | 'require_jit';
+  matchedPolicy?: PolicyRule;
+  reason: string;
+  requiredActions: string[];
+  minTrust: number;
+}
+
+export interface PolicyInput {
+  path: string;
+  method: string;
+  userId?: string;
+  role?: string;
+  trustScore: number;
+  deviceTrusted: boolean;
+  mfaVerified: boolean;
+  hasJitGrant: boolean;
+}
+
+export class PolicyEngine {
+  private rulesCache: { data: PolicyRule[]; ts: number } | null = null;
+
+  private getRules(): PolicyRule[] {
+    if (this.rulesCache && Date.now() - this.rulesCache.ts < 60_000) {
+      return this.rulesCache.data;
+    }
+    const rows = db.prepare(`
+      SELECT * FROM zt_policies WHERE enabled = 1 ORDER BY priority ASC
+    `).all() as PolicyRule[];
+    this.rulesCache = { data: rows, ts: Date.now() };
+    return rows;
+  }
+
+  /**
+   * PDP اصلی — تصمیم می‌گیره allow/deny/step-up
+   */
+  evaluate(input: PolicyInput): PolicyDecision {
+    // ═══════════════════════════════════════════
+    //  1. Route های حساس پیش‌فرض (سخت‌گیرانه)
+    // ═══════════════════════════════════════════
+    for (const sensitive of ZTA_CONFIG.sensitiveRoutes) {
+      if (new RegExp(sensitive.pattern).test(input.path)) {
+        if (input.trustScore < sensitive.minTrust) {
+          return {
+            decision: input.trustScore >= ZTA_CONFIG.trustThreshold ? 'step_up' : 'deny',
+            reason: `sensitive_route_requires_trust_${sensitive.minTrust}`,
+            requiredActions: ['step_up'],
+            minTrust: sensitive.minTrust
+          };
+        }
+      }
+    }
+
+    // ═══════════════════════════════════════════
+    //  2. DB Policies
+    // ═══════════════════════════════════════════
+    for (const rule of this.getRules()) {
+      if (!this.matches(rule, input)) continue;
+
+      const requiredActions: string[] = [];
+
+      if (input.trustScore < rule.min_trust) {
+        requiredActions.push('step_up');
+      }
+      if (rule.require_device_trust && !input.deviceTrusted) {
+        requiredActions.push('trust_device');
+      }
+      if (rule.require_mfa && !input.mfaVerified) {
+        requiredActions.push('mfa');
+      }
+      if (rule.require_jit && !input.hasJitGrant) {
+        return {
+          decision: 'require_jit',
+          matchedPolicy: rule,
+          reason: 'jit_grant_required',
+          requiredActions: ['request_jit'],
+          minTrust: rule.min_trust
+        };
+      }
+
+      if (requiredActions.length > 0) {
+        return {
+          decision: 'step_up',
+          matchedPolicy: rule,
+          reason: `policy_requires_${requiredActions.join('_')}`,
+          requiredActions,
+          minTrust: rule.min_trust
+        };
+      }
+
+      // role check
+      if (rule.allowed_roles) {
+        const roles: string[] = JSON.parse(rule.allowed_roles);
+        if (!input.role || !roles.includes(input.role)) {
+          return {
+            decision: 'deny',
+            matchedPolicy: rule,
+            reason: 'role_not_allowed',
+            requiredActions: [],
+            minTrust: rule.min_trust
+          };
+        }
+      }
+
+      return {
+        decision: 'allow',
+        matchedPolicy: rule,
+        reason: 'policy_passed',
+        requiredActions: [],
+        minTrust: rule.min_trust
+      };
+    }
+
+    // ═══════════════════════════════════════════
+    //  3. Default Decision بر اساس trust score
+    // ═══════════════════════════════════════════
+    if (input.trustScore >= ZTA_CONFIG.stepUpThreshold) {
+      return { decision: 'allow', reason: 'trust_high', requiredActions: [], minTrust: ZTA_CONFIG.trustThreshold };
+    }
+    if (input.trustScore >= ZTA_CONFIG.trustThreshold) {
+      return { decision: 'step_up', reason: 'trust_medium', requiredActions: ['step_up'], minTrust: ZTA_CONFIG.trustThreshold };
+    }
+    return { decision: 'deny', reason: 'trust_low', requiredActions: [], minTrust: ZTA_CONFIG.trustThreshold };
+  }
+
+  private matches(rule: PolicyRule, input: PolicyInput): boolean {
+    if (rule.method && rule.method !== input.method) return false;
+    return new RegExp(rule.route_pattern).test(input.path);
+  }
+
+  // ───── CRUD ─────
+  list(): PolicyRule[] {
+    return db.prepare('SELECT * FROM zt_policies ORDER BY priority ASC').all() as PolicyRule[];
+  }
+
+  create(params: {
+    name: string;
+    description?: string;
+    routePattern: string;
+    method?: string;
+    minTrust: number;
+    requireDeviceTrust?: boolean;
+    requireMfa?: boolean;
+    requireJit?: boolean;
+    allowedRoles?: string[];
+    priority?: number;
+  }) {
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO zt_policies 
+        (id, name, description, route_pattern, method, min_trust, require_device_trust,
+         require_mfa, require_jit, allowed_roles, priority, enabled, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    `).run(
+      id,
+      params.name,
+      params.description || null,
+      params.routePattern,
+      params.method || null,
+      params.minTrust,
+      params.requireDeviceTrust ? 1 : 0,
+      params.requireMfa ? 1 : 0,
+      params.requireJit ? 1 : 0,
+      params.allowedRoles ? JSON.stringify(params.allowedRoles) : null,
+      params.priority ?? 100,
+      Date.now()
+    );
+    this.rulesCache = null;
+    return db.prepare('SELECT * FROM zt_policies WHERE id = ?').get(id);
+  }
+
+  update(id: string, patch: Partial<PolicyRule>) {
+    const fields: string[] = [];
+    const values: any[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (v !== undefined) {
+        fields.push(`${k} = ?`);
+        values.push(v);
+      }
+    }
+    if (!fields.length) return;
+    values.push(id);
+    db.prepare(`UPDATE zt_policies SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    this.rulesCache = null;
+  }
+
+  remove(id: string) {
+    db.prepare('DELETE FROM zt_policies WHERE id = ?').run(id);
+    this.rulesCache = null;
+  }
+}
+
+export const policyEngine = new PolicyEngine();
+```
+
+---
+
+⏱️ server/services/jitAccess.service.ts
+
+```typescript
+import crypto from 'crypto';
+import db from './db.service.js';
+import { ZTA_CONFIG } from '../config/zeroTrust.config.js';
+
+export interface JitGrantRow {
+  id: string;
+  user_id: string;
+  resource: string;
+  permissions: string | null;
+  reason: string | null;
+  granted_by: string | null;
+  granted_at: number;
+  expires_at: number;
+  revoked_at: number | null;
+  is_active: number;
+}
+
+export class JitAccessService {
+  /**
+   * درخواست JIT grant
+   */
+  request(params: {
+    userId: string;
+    resource: string;
+    reason: string;
+    durationMs?: number;
+    grantedBy?: string;
+    permissions?: string[];
+  }): JitGrantRow {
+    const duration = Math.min(
+      params.durationMs || ZTA_CONFIG.jit.defaultDurationMs,
+      ZTA_CONFIG.jit.maxDurationMs
+    );
+
+    const id = crypto.randomUUID();
+    const now = Date.now();
+
+    db.prepare(`
+      INSERT INTO jit_grants 
+        (id, user_id, resource, permissions, reason, granted_by, granted_at, expires_at, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `).run(
+      id,
+      params.userId,
+      params.resource,
+      params.permissions ? JSON.stringify(params.permissions) : null,
+      params.reason,
+      params.grantedBy || null,
+      now,
+      now + duration
+    );
+
+    return db.prepare('SELECT * FROM jit_grants WHERE id = ?').get(id) as JitGrantRow;
+  }
+
+  /**
+   * چک اینکه کاربر برای این resource JIT فعال داره
+   */
+  hasAccess(userId: string, path: string): boolean {
+    const now = Date.now();
+    const grants = db.prepare(`
+      SELECT * FROM jit_grants 
+      WHERE user_id = ? AND is_active = 1 AND expires_at > ? AND revoked_at IS NULL
+    `).all(userId, now) as JitGrantRow[];
+
+    for (const grant of grants) {
+      const pattern = grant.resource.replace(/\*/g, '.*');
+      if (new RegExp(`^${pattern}$`).test(path)) return true;
+    }
+    return false;
+  }
+
+  getActive(userId: string): JitGrantRow[] {
+    return db.prepare(`
+      SELECT * FROM jit_grants 
+      WHERE user_id = ? AND is_active = 1 AND expires_at > ? AND revoked_at IS NULL
+      ORDER BY expires_at ASC
+    `).all(userId, Date.now()) as JitGrantRow[];
+  }
+
+  revoke(id: string, userId?: string) {
+    if (userId) {
+      db.prepare(`
+        UPDATE jit_grants SET is_active = 0, revoked_at = ?
+        WHERE id = ? AND user_id = ?
+      `).run(Date.now(), id, userId);
+    } else {
+      db.prepare('UPDATE jit_grants SET is_active = 0, revoked_at = ? WHERE id = ?')
+        .run(Date.now(), id);
+    }
+  }
+
+  cleanup() {
+    const result = db.prepare('UPDATE jit_grants SET is_active = 0 WHERE expires_at < ? AND is_active = 1')
+      .run(Date.now());
+    return result.changes;
+  }
+}
+
+export const jitAccessService = new JitAccessService();
+```
+
+---
+
+🔐 server/services/stepUpAuth.service.ts
+
+```typescript
+import crypto from 'crypto';
+import db from './db.service.js';
+
+export interface StepUpRow {
+  id: string;
+  user_id: string;
+  session_id: string | null;
+  reason: string;
+  method: string;
+  required_trust: number | null;
+  solved_at: number | null;
+  expires_at: number;
+  attempts: number;
+  created_at: number;
+}
+
+export class StepUpAuthService {
+  create(params: {
+    userId: string;
+    sessionId?: string;
+    reason: string;
+    method?: 'totp' | 'password';
+    requiredTrust?: number;
+  }): StepUpRow {
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO step_up_challenges 
+        (id, user_id, session_id, reason, method, required_trust, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      params.userId,
+      params.sessionId || null,
+      params.reason,
+      params.method || 'totp',
+      params.requiredTrust || null,
+      Date.now() + 5 * 60 * 1000,
+      Date.now()
+    );
+
+    return db.prepare('SELECT * FROM step_up_challenges WHERE id = ?').get(id) as StepUpRow;
+  }
+
+  get(id: string): StepUpRow | undefined {
+    return db.prepare('SELECT * FROM step_up_challenges WHERE id = ?').get(id) as StepUpRow | undefined;
+  }
+
+  solve(id: string) {
+    db.prepare('UPDATE step_up_challenges SET solved_at = ? WHERE id = ?')
+      .run(Date.now(), id);
+  }
+
+  incrementAttempts(id: string) {
+    db.prepare('UPDATE step_up_challenges SET attempts = attempts + 1 WHERE id = ?').run(id);
+  }
+
+  /**
+   * آیا این session step-up حل‌شده داره؟
+   */
+  isSessionElevated(sessionId: string, withinMs = 15 * 60 * 1000): boolean {
+    const since = Date.now() - withinMs;
+    const row = db.prepare(`
+      SELECT * FROM step_up_challenges 
+      WHERE session_id = ? AND solved_at > ? 
+      ORDER BY solved_at DESC LIMIT 1
+    `).get(sessionId, since) as StepUpRow | undefined;
+    return !!row;
+  }
+
+  cleanup() {
+    const result = db.prepare('DELETE FROM step_up_challenges WHERE expires_at < ?')
+      .run(Date.now());
+    return result.changes;
+  }
+}
+
+export const stepUpAuthService = new StepUpAuthService();
+```
+
+---
+
+🛡️ server/middleware/zeroTrust.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { ZTA_CONFIG } from '../config/zeroTrust.config.js';
+import { trustScoreService } from '../services/trustScore.service.js';
+import { policyEngine } from '../services/policyEngine.service.js';
+import { deviceTrustService } from '../services/deviceTrust.service.js';
+import { sessionBindingService } from '../services/sessionBinding.service.js';
+import { jitAccessService } from '../services/jitAccess.service.js';
+import { stepUpAuthService } from '../services/stepUpAuth.service.js';
+
+declare global {
+  namespace Express {
+    interface Request {
+      zt?: {
+        trust: any;
+        policy: any;
+        device?: any;
+      };
+    }
+  }
+}
+
+export async function zeroTrustGuard(req: Request, res: Response, next: NextFunction) {
+  if (!ZTA_CONFIG.enabled) return next();
+
+  const user = (req as any).user;
+  if (!user) return next(); // auth middleware قبلش باید پاس داده باشه
+
+  const ip = req.ip || 'unknown';
+  const ua = req.headers['user-agent'] || '';
+  const deviceToken = req.headers['x-device-token'] as string;
+  const rawFingerprint = req.headers['x-device-fingerprint'] as string;
+
+  // ───── 1. Device verification ─────
+  let device: any = null;
+  if (deviceToken) {
+    const decoded = await deviceTrustService.verifyDeviceToken(deviceToken);
+    if (decoded && decoded.userId === user.sub) {
+      device = deviceTrustService.findById(decoded.deviceId);
+    }
+  }
+
+  // ───── 2. Session binding ─────
+  const sessionId = user.jti || user.sessionId;
+  if (sessionId) {
+    const bound = sessionBindingService.get(sessionId);
+    if (!bound) {
+      // اولین بار → bind
+      sessionBindingService.bind({
+        sessionId,
+        userId: user.sub,
+        deviceId: device?.id,
+        ip,
+        ua,
+        fingerprint: rawFingerprint
+      });
+    }
+  }
+
+  // ───── 3. Trust evaluation ─────
+  const trust = await trustScoreService.evaluate({
+    userId: user.sub,
+    sessionId,
+    ip,
+    userAgent: ua,
+    deviceFingerprint: rawFingerprint,
+    geo: (req as any).geo,
+    vpn: (req as any).vpnDetection,
+    bot: (req as any).botDetection,
+    threat: (req as any).threatIntel
+  });
+
+  // ───── 4. Policy evaluation ─────
+  const hasJit = jitAccessService.hasAccess(user.sub, req.path);
+  const mfaVerified = sessionId ? stepUpAuthService.isSessionElevated(sessionId) : false;
+
+  const policy = policyEngine.evaluate({
+    path: req.path,
+    method: req.method,
+    userId: user.sub,
+    role: user.role,
+    trustScore: trust.score,
+    deviceTrusted: device?.is_trusted === 1,
+    mfaVerified,
+    hasJitGrant: hasJit
+  });
+
+  // ذخیره در request
+  req.zt = { trust, policy, device };
+
+  // به‌روزرسانی trust در session binding
+  if (sessionId) {
+    sessionBindingService.updateTrust(sessionId, trust.score, trust.level);
+  }
+
+  // ═══════════════════════════════════════════
+  //  Decision
+  // ═══════════════════════════════════════════
+  switch (policy.decision) {
+    case 'allow':
+      return next();
+
+    case 'deny':
+      sessionBindingService.recordAnomaly(sessionId, policy.reason);
+      return res.status(403).json({
+        success: false,
+        code: 'ZERO_TRUST_DENIED',
+        error: 'Access denied by Zero Trust policy',
+        reason: policy.reason,
+        trustScore: trust.score,
+        trustLevel: trust.level
+      });
+
+    case 'require_jit':
+      return res.status(403).json({
+        success: false,
+        code: 'JIT_REQUIRED',
+        error: 'Just-In-Time access required',
+        reason: policy.reason,
+        trustScore: trust.score,
+        requiredActions: policy.requiredActions
+      });
+
+    case 'step_up':
+      // اگر از قبل elevated هست، اجازه بده
+      if (mfaVerified) return next();
+
+      // ایجاد challenge
+      const challenge = stepUpAuthService.create({
+        userId: user.sub,
+        sessionId,
+        reason: policy.reason,
+        method: 'totp',
+        requiredTrust: policy.minTrust
+      });
+
+      return res.status(403).json({
+        success: false,
+        code: 'STEP_UP_REQUIRED',
+        error: 'Additional verification required',
+        challengeId: challenge.id,
+        reason: policy.reason,
+        requiredActions: policy.requiredActions,
+        trustScore: trust.score,
+        trustLevel: trust.level,
+        expiresAt: challenge.expires_at
+      });
+  }
+}
+```
+
+---
+
+🔄 server/middleware/continuousVerification.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { sessionBindingService } from '../services/sessionBinding.service.js';
+import { ZTA_CONFIG } from '../config/zeroTrust.config.js';
+
+/**
+ * بررسی مستمر در هر درخواست:
+ * - آیا session منقضی نشده؟
+ * - آیا IP تغییر غیرمجاز داشته؟
+ * - آیا باید re-evaluate بشه؟
+ */
+export function continuousVerification(req: Request, res: Response, next: NextFunction) {
+  if (!ZTA_CONFIG.enabled) return next();
+
+  const user = (req as any).user;
+  if (!user) return next();
+
+  const sessionId = user.jti || user.sessionId;
+  if (!sessionId) return next();
+
+  const session = sessionBindingService.get(sessionId);
+  if (!session) return next();
+
+  // 1. session معتبره؟
+  if (session.is_valid !== 1 || session.expires_at < Date.now()) {
+    return res.status(401).json({
+      success: false,
+      code: 'SESSION_EXPIRED',
+      error: 'Session no longer valid'
+    });
+  }
+
+  // 2. IP جدید بیش از حد مجاز؟
+  const ip = req.ip || 'unknown';
+  const ips: string[] = JSON.parse(session.ip_history || '[]');
+  if (!ips.includes(ip) && ips.length >= ZTA_CONFIG.sessionMaxIps) {
+    sessionBindingService.invalidate(sessionId, 'too_many_ips');
+    return res.status(401).json({
+      success: false,
+      code: 'SESSION_INVALIDATED',
+      error: 'Session invalidated due to IP anomaly'
+    });
+  }
+
+  // 3. فاصله re-evaluation
+  const elapsed = Date.now() - session.last_evaluated_at;
+  if (elapsed > ZTA_CONFIG.reverifyIntervalMs) {
+    (req as any).ztNeedsReverify = true;
+  }
+
+  next();
+}
+```
+
+---
+
+🔐 server/middleware/stepUpAuth.middleware.ts
+
+```typescript
+import { Router, Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
+import { requireAuth } from './auth.middleware.js';
+import { stepUpAuthService } from '../services/stepUpAuth.service.js';
+import { totpService } from '../services/totp.service.js';
+import { sessionBindingService } from '../services/sessionBinding.service.js';
+
+const router = Router();
+
+// ───── POST /api/zerotrust/step-up/:challengeId ─────
+router.post('/step-up/:challengeId', requireAuth, async (req, res, next) => {
+  try {
+    const schema = z.object({ code: z.string().min(6).max(16) });
+    const { code } = schema.parse(req.body);
+
+    const challenge = stepUpAuthService.get(req.params.challengeId);
+    if (!challenge) {
+      return res.status(404).json({ success: false, error: 'Challenge not found' });
+    }
+    if (challenge.user_id !== req.user!.sub) {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+    if (challenge.solved_at) {
+      return res.json({ success: true, data: { alreadySolved: true } });
+    }
+    if (challenge.expires_at < Date.now()) {
+      return res.status(410).json({ success: false, error: 'Challenge expired' });
+    }
+    if (challenge.attempts >= 5) {
+      return res.status(429).json({ success: false, error: 'Too many attempts' });
+    }
+
+    // ───── Verify TOTP ─────
+    const valid = totpService.verifyCode(req.user!.sub, code);
+    if (!valid) {
+      stepUpAuthService.incrementAttempts(challenge.id);
+      return res.status(401).json({ success: false, error: 'Invalid code' });
+    }
+
+    stepUpAuthService.solve(challenge.id);
+
+    res.json({ success: true, data: { verified: true } });
+  } catch (err) { next(err); }
+});
+
+export default router;
+```
+
+---
+
+🛣️ server/routes/zerotrust.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { trustScoreService } from '../services/trustScore.service.js';
+import { policyEngine } from '../services/policyEngine.service.js';
+import { sessionBindingService } from '../services/sessionBinding.service.js';
+import { jitAccessService } from '../services/jitAccess.service.js';
+import db from '../services/db.service.js';
+
+const router = Router();
+
+// ───── ادمین ─────
+router.use(requireAuth, requireRole('admin'));
+
+// Stats
+router.get('/stats', (_req, res) => {
+  const trustDist = db.prepare(`
+    SELECT trust_level, COUNT(*) as count
+    FROM trust_evaluations
+    WHERE created_at > ?
+    GROUP BY trust_level
+  `).all(Date.now() - 24 * 3600 * 1000);
+
+  const activeSessions = db.prepare(`
+    SELECT COUNT(*) as c FROM session_bindings WHERE is_valid = 1 AND expires_at > ?
+  `).get(Date.now()) as { c: number };
+
+  const activeJit = db.prepare(`
+    SELECT COUNT(*) as c FROM jit_grants WHERE is_active = 1 AND expires_at > ?
+  `).get(Date.now()) as { c: number };
+
+  const recentDenies = db.prepare(`
+    SELECT * FROM trust_evaluations 
+    WHERE triggered_action = 'deny'
+    ORDER BY created_at DESC LIMIT 20
+  `).all();
+
+  res.json({
+    success: true,
+    data: {
+      trustDistribution: trustDist,
+      activeSessions: activeSessions.c,
+      activeJit: activeJit.c,
+      recentDenies
+    }
+  });
+});
+
+// Policies CRUD
+router.get('/policies', (_req, res) => {
+  res.json({ success: true, data: policyEngine.list() });
+});
+
+router.post('/policies', (req, res, next) => {
+  try {
+    const schema = z.object({
+      name: z.string(),
+      description: z.string().optional(),
+      routePattern: z.string(),
+      method: z.string().optional(),
+      minTrust: z.number().int().min(0).max(100),
+      requireDeviceTrust: z.boolean().optional(),
+      requireMfa: z.boolean().optional(),
+      requireJit: z.boolean().optional(),
+      allowedRoles: z.array(z.string()).optional(),
+      priority: z.number().int().optional()
+    });
+    const body = schema.parse(req.body);
+    const policy = policyEngine.create(body);
+    res.status(201).json({ success: true, data: policy });
+  } catch (err) { next(err); }
+});
+
+router.delete('/policies/:id', (req, res) => {
+  policyEngine.remove(req.params.id);
+  res.json({ success: true });
+});
+
+// Sessions management
+router.get('/sessions/:userId', (req, res) => {
+  res.json({ success: true, data: sessionBindingService.getActiveSessions(req.params.userId) });
+});
+
+router.delete('/sessions/:sessionId', (req, res) => {
+  sessionBindingService.invalidate(req.params.sessionId, 'admin_revoked');
+  res.json({ success: true });
+});
+
+// JIT management
+router.post('/jit/grant', (req, res, next) => {
+  try {
+    const schema = z.object({
+      userId: z.string(),
+      resource: z.string(),
+      reason: z.string(),
+      durationMs: z.number().optional(),
+      permissions: z.array(z.string()).optional()
+    });
+    const body = schema.parse(req.body);
+    const grant = jitAccessService.request({ ...body, grantedBy: req.user!.sub });
+    res.json({ success: true, data: grant });
+  } catch (err) { next(err); }
+});
+
+router.delete('/jit/:id', (req, res) => {
+  jitAccessService.revoke(req.params.id);
+  res.json({ success: true });
+});
+
+// Evaluation history
+router.get('/evaluations/:userId', (req, res) => {
+  const rows = db.prepare(`
+    SELECT * FROM trust_evaluations WHERE user_id = ?
+    ORDER BY created_at DESC LIMIT 100
+  `).all(req.params.userId);
+  res.json({ success: true, data: rows });
+});
+
+export default router;
+```
+
+---
+
+🛣️ server/routes/device.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth } from '../middleware/auth.middleware.js';
+import { deviceTrustService } from '../services/deviceTrust.service.js';
+
+const router = Router();
+router.use(requireAuth);
+
+// لیست دستگاه‌ها
+router.get('/', (req, res) => {
+  res.json({ success: true, data: deviceTrustService.listUserDevices(req.user!.sub) });
+});
+
+// ثبت دستگاه جدید + دریافت device token
+router.post('/register', async (req, res, next) => {
+  try {
+    const schema = z.object({
+      fingerprint: z.string().min(16),
+      name: z.string().optional(),
+      type: z.string().optional(),
+      os: z.string().optional(),
+      osVersion: z.string().optional(),
+      browser: z.string().optional(),
+      browserVersion: z.string().optional(),
+      posture: z.object({
+        score: z.number().min(0).max(100),
+        details: z.any()
+      }).optional()
+    });
+    const body = schema.parse(req.body);
+
+    const device = deviceTrustService.upsert({
+      userId: req.user!.sub,
+      fingerprint: body.fingerprint,
+      ip: req.ip || 'unknown',
+      deviceInfo: {
+        name: body.name,
+        type: body.type,
+        os: body.os,
+        osVersion: body.osVersion,
+        browser: body.browser,
+        browserVersion: body.browserVersion
+      },
+      posture: body.posture
+    });
+
+    const deviceToken = await deviceTrustService.issueDeviceToken({
+      userId: req.user!.sub,
+      deviceId: device.id,
+      fingerprint: body.fingerprint
+    });
+
+    res.json({
+      success: true,
+      data: { device, deviceToken }
+    });
+  } catch (err) { next(err); }
+});
+
+// Trust device
+router.post('/:id/trust', (req, res) => {
+  deviceTrustService.trust(req.params.id, req.user!.sub);
+  res.json({ success: true });
+});
+
+router.post('/:id/untrust', (req, res) => {
+  deviceTrustService.untrust(req.params.id, req.user!.sub);
+  res.json({ success: true });
+});
+
+router.post('/:id/block', (req, res) => {
+  deviceTrustService.block(req.params.id, req.user!.sub);
+  res.json({ success: true });
+});
+
+export default router;
+```
+
+---
+
+🖥️ server/index.ts — ترتیب نهایی
+
+```typescript
+import { zeroTrustGuard } from './middleware/zeroTrust.middleware.js';
+import { continuousVerification } from './middleware/continuousVerification.middleware.js';
+import stepUpRoutes from './middleware/stepUpAuth.middleware.js';
+import ztRoutes from './routes/zerotrust.routes.js';
+import deviceRoutes from './routes/device.routes.js';
+
+// ... لایه‌های قبلی ...
+
+// ───── ZTA Layer ─────
+app.use('/api/zerotrust', ztRoutes);
+app.use('/api/devices', deviceRoutes);
+app.use('/api/zerotrust', stepUpRoutes);
+
+// روی همه روت‌های protected
+app.use('/api/wallet', requireAuth, continuousVerification, zeroTrustGuard, walletRoutes);
+app.use('/api/tx', requireAuth, continuousVerification, zeroTrustGuard, txRoutes);
+```
+
+معماری نهایی:
+
+```
+L1:  ipAccessGuard          → IP whitelist/blacklist
+L2:  geoBlockGuard          → Geo blocking
+L3:  attachVpnProfile       → VPN detection
+L4:  attachBotProfile       → Bot fingerprint
+L5:  attachThreatProfile    → Threat intel
+L6:  globalLimiter          → Rate limit
+L7:  checkIpBan             → Brute-force ban
+L8:  authSlowDown/authLimiter
+L9:  botDetectionGuard
+L10: vpnDetectionGuard
+L11: threatIntelGuard
+L12: requireAuth            → JWT verification
+L13: continuousVerification → Session validity     ← جدید
+L14: zeroTrustGuard         → PDP + Trust eval     ← جدید
+L15: Route Handler
+```
+
+---
+
+🖥️ src/zeroTrust/deviceAttestation.ts — کلاینت
+
+```typescript
+import { getFingerprint } from '../fingerprint/FingerprintCollector';
+
+const DEVICE_TOKEN_KEY = 'apz_device_token';
+const DEVICE_ID_KEY = 'apz_device_id';
+
+export interface DevicePosture {
+  score: number;
+  details: {
+    cookiesEnabled: boolean;
+    localStorage: boolean;
+    indexedDB: boolean;
+    serviceWorker: boolean;
+    secureContext: boolean;
+    hardwareConcurrency: number;
+    deviceMemory: number;
+    screenLock?: boolean;
+  };
+}
+
+export class DeviceAttestation {
+  /**
+   * جمع‌آوری وضعیت دستگاه (posture)
+   */
+  collectPosture(): DevicePosture {
+    const details = {
+      cookiesEnabled: navigator.cookieEnabled,
+      localStorage: this.testStorage('localStorage'),
+      indexedDB: typeof indexedDB !== 'undefined',
+      serviceWorker: 'serviceWorker' in navigator,
+      secureContext: window.isSecureContext,
+      hardwareConcurrency: navigator.hardwareConcurrency || 0,
+      deviceMemory: (navigator as any).deviceMemory || 0
+    };
+
+    let score = 0;
+    if (details.cookiesEnabled) score += 10;
+    if (details.localStorage) score += 10;
+    if (details.indexedDB) score += 10;
+    if (details.serviceWorker) score += 10;
+    if (details.secureContext) score += 20;
+    if (details.hardwareConcurrency >= 4) score += 20;
+    if (details.deviceMemory >= 4) score += 20;
+
+    return { score: Math.min(100, score), details };
+  }
+
+  private testStorage(key: string): boolean {
+    try {
+      localStorage.setItem('__test__', '1');
+      localStorage.removeItem('__test__');
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * ثبت/بازیابی دستگاه
+   */
+  async register(apiCall: (payload: any) => Promise<any>): Promise<{ deviceToken: string; deviceId: string }> {
+    // fingerprint جمع کن
+    const fp = await getFingerprint();
+    const rawFingerprint = JSON.stringify({
+      canvas: fp.canvas,
+      webgl: fp.webgl,
+      audio: fp.audio,
+      screen: fp.screen,
+      timezone: fp.timezone,
+      platform: fp.platform,
+      hardwareConcurrency: fp.hardwareConcurrency,
+      deviceMemory: fp.deviceMemory
+    });
+
+    const posture = this.collectPosture();
+    const ua = navigator.userAgent;
+    const uaParsed = this.parseUa(ua);
+
+    const response = await apiCall({
+      fingerprint: rawFingerprint,
+      name: `${uaParsed.browser} on ${uaParsed.os}`,
+      type: uaParsed.type,
+      os: uaParsed.os,
+      osVersion: uaParsed.osVersion,
+      browser: uaParsed.browser,
+      browserVersion: uaParsed.browserVersion,
+      posture
+    });
+
+    if (response.success && response.data) {
+      localStorage.setItem(DEVICE_TOKEN_KEY, response.data.deviceToken);
+      localStorage.setItem(DEVICE_ID_KEY, response.data.device.id);
+      return {
+        deviceToken: response.data.deviceToken,
+        deviceId: response.data.device.id
+      };
+    }
+
+    throw new Error('Device registration failed');
+  }
+
+  /**
+   * توکن ذخیره‌شده رو بگیر
+   */
+  getToken(): string | null {
+    return localStorage.getItem(DEVICE_TOKEN_KEY);
+  }
+
+  getDeviceId(): string | null {
+    return localStorage.getItem(DEVICE_ID_KEY);
+  }
+
+  clear() {
+    localStorage.removeItem(DEVICE_TOKEN_KEY);
+    localStorage.removeItem(DEVICE_ID_KEY);
+  }
+
+  /**
+   * برگرداندن fingerprint خام (برای هدر X-Device-Fingerprint)
+   */
+  async getRawFingerprint(): Promise<string> {
+    const fp = await getFingerprint();
+    return JSON.stringify({
+      canvas: fp.canvas,
+      webgl: fp.webgl,
+      audio: fp.audio,
+      screen: fp.screen,
+      timezone: fp.timezone,
+      platform: fp.platform,
+      hardwareConcurrency: fp.hardwareConcurrency,
+      deviceMemory: fp.deviceMemory
+    });
+  }
+
+  private parseUa(ua: string) {
+    return {
+      browser: /Chrome/.test(ua) ? 'Chrome' : /Firefox/.test(ua) ? 'Firefox' : /Safari/.test(ua) ? 'Safari' : 'Unknown',
+      browserVersion: (ua.match(/(Chrome|Firefox|Version)\/([\d.]+)/) || [])[2] || '',
+      os: /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : /Android/.test(ua) ? 'Android' : /iOS/.test(ua) ? 'iOS' : 'Unknown',
+      osVersion: (ua.match(/(?:Windows NT|Android|OS X) ([\d._]+)/) || [])[1] || '',
+      type: /Mobile|Android|iPhone|iPad/.test(ua) ? 'mobile' : 'desktop'
+    };
+  }
+}
+
+export const deviceAttestation = new DeviceAttestation();
+```
+
+---
+
+🌐 src/api/client.ts — اتصال خودکار
+
+```typescript
+import { deviceAttestation } from '../zeroTrust/deviceAttestation';
+
+// در request function، به headers اضافه کن:
+const deviceToken = deviceAttestation.getToken();
+const deviceFingerprint = await deviceAttestation.getRawFingerprint();
+
+headers: {
+  'Content-Type': 'application/json',
+  ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  ...(deviceToken ? { 'X-Device-Token': deviceToken } : {}),
+  ...(deviceFingerprint ? { 'X-Device-Fingerprint': deviceFingerprint } : {}),
+  ...options.headers
+}
+```
+
+کدهای خطای ZTA که باید در client هندل بشن:
+
+· STEP_UP_REQUIRED → نمایش modal TOTP
+· JIT_REQUIRED → نمایش پیام درخواست دسترسی
+· ZERO_TRUST_DENIED → نمایش صفحه deny
+· SESSION_INVALIDATED → logout اجباری
+
+---
+
+🖥️ کامپوننت src/components/StepUpAuthModal.tsx
+
+```tsx
+import React, { useState } from 'react';
+
+interface Props {
+  challengeId: string;
+  reason: string;
+  onSuccess: () => void;
+  onCancel: () => void;
+}
+
+export const StepUpAuthModal: React.FC<Props> = ({ challengeId, reason, onSuccess, onCancel }) => {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+
+    try {
+      const res = await fetch(`/api/zerotrust/step-up/${challengeId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${sessionStorage.getItem('apz_access_token')}`
+        },
+        body: JSON.stringify({ code })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Verification failed');
+      }
+
+      onSuccess();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reasonText: Record<string, string> = {
+    sensitive_action: 'این عملیات حساس نیاز به تأیید اضافی دارد',
+    low_trust: 'سطح اعتماد دستگاه شما پایین است',
+    anomaly: 'فعالیت غیرمعمول شناسایی شد',
+    policy_requires_step_up: 'سیاست امنیتی نیاز به تأیید دارد',
+    policy_requires_mfa: 'احراز هویت دو مرحله‌ای الزامی است'
+  };
+
+  return (
+    <div className="modal-overlay">
+      <div className="step-up-modal">
+        <div className="modal-icon">🔐</div>
+        <h3>تأیید هویت اضافی</h3>
+        <p className="modal-reason">{reasonText[reason] || 'لطفاً هویت خود را تأیید کنید'}</p>
+
+        <form onSubmit={submit}>
+          <input
+            className="totp-input"
+            value={code}
+            onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            placeholder="000000"
+            inputMode="numeric"
+            autoFocus
+            dir="ltr"
+          />
+          {error && <div className="auth-error">⚠️ {error}</div>}
+          <div className="modal-actions">
+            <button type="button" className="btn-secondary" onClick={onCancel}>
+              انصراف
+            </button>
+            <button className="btn-primary" disabled={busy || code.length !== 6} type="submit">
+              {busy ? 'در حال بررسی…' : 'تأیید'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+```
+
+---
+
+🎨 استایل‌ها
+
+```css
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: grid;
+  place-items: center;
+  z-index: 9999;
+  backdrop-filter: blur(4px);
+}
+.step-up-modal {
+  max-width: 420px;
+  width: 90%;
+  padding: 32px;
+  background: #14161c;
+  border: 1px solid #2a2f3d;
+  border-radius: 16px;
+  text-align: center;
+  direction: rtl;
+}
+.modal-icon { font-size: 3rem; margin-bottom: 16px; }
+.step-up-modal h3 { color: #e7e9ee; margin-bottom: 8px; }
+.modal-reason { color: #a4acbd; font-size: 0.9rem; margin-bottom: 20px; }
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+.modal-actions button { flex: 1; }
+
+/* ───── Zero Trust Panel ───── */
+.trust-gauge {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 20px;
+  background: #0d0f14;
+  border-radius: 12px;
+  margin-bottom: 20px;
+}
+.trust-circle {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 1.8rem;
+}
+.trust-details { flex: 1; }
+.trust-components {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.trust-component {
+  padding: 8px 12px;
+  background: #14161c;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  display: flex;
+  justify-content: space-between;
+}
+.trust-component strong { color: #6c7cff; }
+```
+
+---
+
+🧪 تست
+
+```bash
+# ───── ثبت دستگاه ─────
+curl -X POST http://localhost:3001/api/devices/register \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fingerprint":"abc123def456...",
+    "name":"Chrome on Windows",
+    "type":"desktop",
+    "os":"Windows",
+    "browser":"Chrome",
+    "posture":{"score":80,"details":{}}
+  }'
+# → { device, deviceToken }
+
+# ───── درخواست به روت حساس ─────
+curl -X POST http://localhost:3001/api/wallet/create \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "X-Device-Token: <device-token>"
+# → { code: "STEP_UP_REQUIRED", challengeId: "..." }
+
+# ───── تأیید step-up ─────
+curl -X POST http://localhost:3001/api/zerotrust/step-up/<challengeId> \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"code":"123456"}'
+# → { verified: true }
+
+# ───── درخواست مجدد (اکنون allow) ─────
+curl -X POST http://localhost:3001/api/wallet/create \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "X-Device-Token: <device-token>"
+# → { wallet created }
+
+# ───── آمار ZTA ─────
+curl http://localhost:3001/api/zerotrust/stats \
+  -H "Authorization: Bearer <ADMIN>"
+```
+
+---
+
+✅ خلاصه ویژگی‌های ZTA
+
+جزء توضیح
+🎯 Policy Decision Point (PDP) Policy Engine با اولویت و شرایط
+📊 Trust Score (0-100) 5 کامپوننت × 15+ وزن قابل تنظیم
+📱 Device Trust ثبت، تأیید، block، posture check
+🔗 Session Binding bind به device+IP+fingerprint، هشدار تغییر
+⏱️ JIT Access دسترسی موقت با TTL و دلیل
+🔐 Step-Up Auth TOTP برای عملیات حساس
+🔄 Continuous Verification re-eval هر 5 دقیقه
+🎛️ Sensitive Routes trust بالاتر برای عملیات حساس
+📉 Trust Decay کاهش تدریجی با بی‌فعالیتی/انومالی
+🎫 Device Token (JWS) امضا با jose، TTL 30 روزه
+🎨 Admin Panel مدیریت policy + session + JIT
+🚨 Auto Session Kill invalidate در IP anomaly
+
+معماری نهایی (9 لایه):
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  L1: IP Access Control                                   │
+│  L2: Geo Blocking                                        │
+│  L3: VPN/Proxy/Tor Detection                             │
+│  L4: Bot Detection (fingerprint + behavior)              │
+│  L5: Threat Intelligence (AbuseIPDB + Spamhaus)          │
+│  L6: Rate Limiting                                       │
+│  L7: Brute-force Protection                              │
+│  L8: Authentication (Password + OAuth + 2FA)             │
+│  L9: ZERO TRUST (Trust Score + PDP + Session Binding)    │ ← جدید
+└──────────────────────────────────────────────────────────┘
+```
