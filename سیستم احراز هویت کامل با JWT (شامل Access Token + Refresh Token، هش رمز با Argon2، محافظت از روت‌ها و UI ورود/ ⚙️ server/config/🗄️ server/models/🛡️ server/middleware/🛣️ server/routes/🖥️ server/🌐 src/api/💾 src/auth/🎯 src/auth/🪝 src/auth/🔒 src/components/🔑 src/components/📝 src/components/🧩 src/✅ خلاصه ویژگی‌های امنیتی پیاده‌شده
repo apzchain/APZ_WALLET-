@@ -1,0 +1,10 @@
+ویژگی پیاده‌سازی
+🔐 هش رمز عبور Argon2id (memory-hard، مقاوم به GPU)
+🎫 Access Token کوتاه‌عمر JWT 15 دقیقه‌ای با jti
+🔄 Refresh Token بلندعمر 7 روز، ذخیره شده به‌صورت SHA-256 hash در DB
+🍪 httpOnly Cookie Refresh Token از دسترس JS خارجه
+🛡️ Rotation روی Refresh امکان revoke در هر لحظه
+🚫 Logout-all باطل کردن همهٔ توکن‌های کاربر
+👮 Role-based access requireRole('admin') آماده
+🔁 Auto-refresh در فرانت اگر 401 بگیره یک‌بار خودکار refresh می‌کنه
+🔗 Wallet متصل به user wallets.user_id برای جداسازی دادهٔ کاربران
