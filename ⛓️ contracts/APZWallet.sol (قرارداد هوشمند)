@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/**
+ * @title APZWallet
+ * @dev قرارداد کیف پول چندامضایی سبک برای APZ-CHAIN
+ */
+contract APZWallet {
+    address public owner;
+    uint256 public dailyLimit;
+    mapping(address => bool) public guardians;
+    uint256 public guardianCount;
+
+    struct Transaction {
+        address to;
+        uint256 value;
+        bytes data;
+        bool executed;
+        uint256 confirmations;
+    }
+
+    Transaction[] public transactions;
+    mapping(uint256 => mapping(address => bool)) public confirmed;
+
+    event Deposit(address indexed from, uint256 amount);
+    event Submission(uint256 indexed txId);
+    event Confirmation(address indexed guardian, uint256 indexed txId);
+    event Execution(uint256 indexed txId);
+    event GuardianAdded(address indexed guardian);
+    event GuardianRemoved(address indexed guardian);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    modifier onlyGuardian() {
+        require(guardians[msg.sender], "Not guardian");
+        _;
+    }
+
+    modifier txExists(uint256 _txId) {
+        require(_txId < transactions.length, "Tx does not exist");
+        _;
+    }
+
+    modifier notExecuted(uint256 _txId) {
+        require(!transactions[_txId].executed, "Tx already executed");
+        _;
+    }
+
+    constructor(address[] memory _guardians, uint256 _dailyLimit) {
+        owner = msg.sender;
+        dailyLimit = _dailyLimit;
+        guardians[msg.sender] = true;
+        guardianCount = 1;
+        emit GuardianAdded(msg.sender);
+
+        for (uint256 i = 0; i < _guardians.length; i++) {
+            if (!guardians[_guardians[i]]) {
+                guardians[_guardians[i]] = true;
+                guardianCount++;
+                emit GuardianAdded(_guardians[i]);
+            }
+        }
+    }
+
+    receive() external payable {
+        emit Deposit(msg.sender, msg.value);
+    }
+
+    function submitTransaction(address _to, uint256 _value, bytes calldata _data)
+        external
+        onlyGuardian
+        returns (uint256 txId)
+    {
+        txId = transactions.length;
+        transactions.push(Transaction({
+            to: _to,
+            value: _value,
+            data: _data,
+            executed: false,
+            confirmations: 0
+        }));
+        emit Submission(txId);
+    }
+
+    function confirmTransaction(uint256 _txId)
+        external
+        onlyGuardian
+        txExists(_txId)
+        notExecuted(_txId)
+    {
+        require(!confirmed[_txId][msg.sender], "Already confirmed");
+        confirmed[_txId][msg.sender] = true;
+        transactions[_txId].confirmations++;
+        emit Confirmation(msg.sender, _txId);
+
+        if (transactions[_txId].confirmations >= (guardianCount * 2) / 3 + 1) {
+            executeTransaction(_txId);
+        }
+    }
+
+    function executeTransaction(uint256 _txId)
+        internal
+        txExists(_txId)
+        notExecuted(_txId)
+    {
+        Transaction storage txn = transactions[_txId];
+        (bool success, ) = txn.to.call{value: txn.value}(txn.data);
+        require(success, "Tx failed");
+        txn.executed = true;
+        emit Execution(_txId);
+    }
+
+    function addGuardian(address _guardian) external onlyOwner {
+        require(!guardians[_guardian], "Already guardian");
+        guardians[_guardian] = true;
+        guardianCount++;
+        emit GuardianAdded(_guardian);
+    }
+
+    function removeGuardian(address _guardian) external onlyOwner {
+        require(guardians[_guardian], "Not guardian");
+        guardians[_guardian] = false;
+        guardianCount--;
+        emit GuardianRemoved(_guardian);
+    }
+
+    function getTransactionCount() external view returns (uint256) {
+        return transactions.length;
+    }
+
+    function getTransaction(uint256 _txId)
+        external
+        view
+        returns (address to, uint256 value, bytes memory data, bool executed, uint256 confirmations)
+    {
+        Transaction storage txn = transactions[_txId];
+        return (txn.to, txn.value, txn.data, txn.executed, txn.confirmations);
+    }
+}
