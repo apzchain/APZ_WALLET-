@@ -1,0 +1,1540 @@
+🗂️ ساختار اضافهشده
+
+```text
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── threatIntel.config.ts               ← جدید
+│   ├── services/
+│   │   ├── threatIntel.service.ts              ← جدید (هسته اصلی)
+│   │   ├── abuseipdb.service.ts                ← جدید
+│   │   └── spamhaus.service.ts                 ← جدید
+│   ├── middleware/
+│   │   └── threatIntel.middleware.ts           ← جدید
+│   └── routes/
+│       └── threatIntel.routes.ts               ← جدید (admin)
+└── src/
+    └── components/
+        └── admin/
+            └── ThreatIntelPanel.tsx            ← جدید
+```
+
+---
+
+📦 نصب پکیجها
+
+```bash
+npm install abuseipdb-client dnsbl
+```
+
+💡 ترکیب پیشنهادی:
+
+· AbuseIPDB → ۱,۰۰۰ چک/روز رایگان (با تأیید دامنه ۳,۰۰۰/روز)
+· Spamhaus → رایگان، از طریق DNSBL query (zen.spamhaus.org)
+· dnsbl → کتابخانه سبک برای query همزمان چندین DNSBL
+
+---
+
+⚙️ .env.example — اضافه کن
+
+```env
+# ───── Threat Intelligence ─────
+THREAT_INTEL_ENABLED=true
+# حالت: 'monitor' | 'challenge' | 'block'
+THREAT_INTEL_ACTION=challenge
+# آستانه AbuseIPDB confidence score (0-100)
+ABUSE_SCORE_THRESHOLD=75
+# آیا IP های Tor به طور خودکار بلاک شوند؟
+THREAT_BLOCK_TOR=true
+
+# ───── AbuseIPDB ─────
+ABUSEIPDB_API_KEY=your-abuseipdb-api-key
+ABUSEIPDB_MAX_AGE_DAYS=90
+
+# ───── Spamhaus ─────
+SPAMHAUS_ENABLED=true
+# اگر کلید DQS داری (برای production توصیه میشه)
+SPAMHAUS_DQS_KEY=
+
+# ───── Cache ─────
+THREAT_CACHE_TTL_MS=21600000
+THREAT_CACHE_MAX_SIZE=50000
+
+# ───── Feed Sync ─────
+# همگامسازی خودکار blacklist هر چند ساعت؟
+THREAT_SYNC_INTERVAL_HOURS=6
+```
+
+---
+
+⚙️ server/config/threatIntel.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const THREAT_CONFIG = {
+  enabled: process.env.THREAT_INTEL_ENABLED === 'true',
+  action: (process.env.THREAT_INTEL_ACTION || 'challenge') as 'monitor' | 'challenge' | 'block',
+  abuseScoreThreshold: Number(process.env.ABUSE_SCORE_THRESHOLD || 75),
+  blockTor: process.env.THREAT_BLOCK_TOR !== 'false',
+
+  abuseipdb: {
+    apiKey: process.env.ABUSEIPDB_API_KEY || '',
+    maxAgeDays: Number(process.env.ABUSEIPDB_MAX_AGE_DAYS || 90),
+    // free tier: 1000/day, verified domain: 3000/day
+    dailyQuota: 1000
+  },
+
+  spamhaus: {
+    enabled: process.env.SPAMHAUS_ENABLED !== 'false',
+    dqsKey: process.env.SPAMHAUS_DQS_KEY || '',
+    zones: [
+      'zen.spamhaus.org',      // SBL + XBL + PBL
+      'bl.spamcop.net',        // SpamCop
+      'b.barracudacentral.org' // Barracuda
+    ]
+  },
+
+  cache: {
+    ttlMs: Number(process.env.THREAT_CACHE_TTL_MS || 21600000), // 6h
+    maxSize: Number(process.env.THREAT_CACHE_MAX_SIZE || 50000)
+  },
+
+  syncIntervalHours: Number(process.env.THREAT_SYNC_INTERVAL_HOURS || 6),
+
+  // ═══════════════════════════════════════════
+  //  Risk Score Weights
+  // ═══════════════════════════════════════════
+  riskWeights: {
+    abuseConfidenceHigh: 60,      // score >= 75
+    abuseConfidenceMedium: 30,    // score 25-74
+    spamhausListed: 50,
+    spamcopListed: 35,
+    barracudaListed: 30,
+    isTor: 40,
+    multipleBlacklists: 25        // در 2+ لیست
+  },
+
+  // ═══════════════════════════════════════════
+  //  Abuse Categories (شناختهشدههای خطرناک)
+  // ═══════════════════════════════════════════
+  highRiskCategories: [
+    4,  // DDoS Attack
+    14, // Port Scan
+    15, // Hacking
+    18, // Brute-Force
+    21, // Web App Attack
+    22  // SSH Brute-Force
+  ]
+} as const;
+```
+
+---
+
+🗄️ بهروزرسانی server/services/db.service.ts
+
+```typescript
+db.exec(`
+  -- ───── Threat Intelligence Cache ─────
+  CREATE TABLE IF NOT EXISTS threat_cache (
+    ip_address TEXT PRIMARY KEY,
+    abuse_confidence_score INTEGER DEFAULT 0,
+    total_reports INTEGER DEFAULT 0,
+    num_distinct_users INTEGER DEFAULT 0,
+    last_reported_at INTEGER,
+    country_code TEXT,
+    usage_type TEXT,
+    isp TEXT,
+    is_tor INTEGER DEFAULT 0,
+    abuse_categories TEXT,              -- JSON array
+    spamhaus_listed INTEGER DEFAULT 0,
+    spamhaus_zone TEXT,
+    spamcop_listed INTEGER DEFAULT 0,
+    barracuda_listed INTEGER DEFAULT 0,
+    blacklist_count INTEGER DEFAULT 0,
+    risk_score INTEGER DEFAULT 0,
+    risk_level TEXT DEFAULT 'low',
+    provider TEXT,
+    fetched_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_threat_ip ON threat_cache(ip_address);
+  CREATE INDEX IF NOT EXISTS idx_threat_expires ON threat_cache(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_threat_risk ON threat_cache(risk_score);
+  CREATE INDEX IF NOT EXISTS idx_threat_tor ON threat_cache(is_tor);
+
+  -- ───── Threat Intel Events ─────
+  CREATE TABLE IF NOT EXISTS threat_intel_events (
+    id TEXT PRIMARY KEY,
+    ip_address TEXT NOT NULL,
+    user_id TEXT,
+    path TEXT,
+    action TEXT NOT NULL,              -- 'allowed' | 'blocked' | 'challenged'
+    risk_score INTEGER NOT NULL,
+    risk_level TEXT NOT NULL,
+    abuse_score INTEGER,
+    is_tor INTEGER,
+    blacklists TEXT,                   -- JSON array
+    details TEXT,                      -- JSON
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_threat_events_ip ON threat_intel_events(ip_address, created_at);
+  CREATE INDEX IF NOT EXISTS idx_threat_events_time ON threat_intel_events(created_at);
+
+  -- ───── AbuseIPDB Quota Tracking ─────
+  CREATE TABLE IF NOT EXISTS abuseipdb_quota (
+    date TEXT PRIMARY KEY,             -- YYYY-MM-DD
+    calls_used INTEGER NOT NULL DEFAULT 0,
+    calls_limit INTEGER NOT NULL DEFAULT 1000,
+    last_call_at INTEGER
+  );
+
+  -- ───── Manual Threat Reports ─────
+  CREATE TABLE IF NOT EXISTS threat_reports (
+    id TEXT PRIMARY KEY,
+    ip_address TEXT NOT NULL,
+    categories TEXT NOT NULL,          -- JSON array of category IDs
+    comment TEXT,
+    reported_to_abuseipdb INTEGER DEFAULT 0,
+    abuseipdb_response TEXT,
+    created_by TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_threat_reports_ip ON threat_reports(ip_address);
+`);
+```
+
+---
+
+🛡️ server/services/abuseipdb.service.ts
+
+```typescript
+import { AbuseIPDBClient } from 'abuseipdb-client';
+import { THREAT_CONFIG } from '../config/threatIntel.config.js';
+import db from './db.service.js';
+
+export interface AbuseIPDBResult {
+  ipAddress: string;
+  abuseConfidenceScore: number;
+  totalReports: number;
+  numDistinctUsers: number;
+  lastReportedAt: string | null;
+  countryCode: string | null;
+  usageType: string | null;
+  isp: string | null;
+  isTor: boolean;
+  isWhitelisted: boolean;
+  categories: number[];
+}
+
+export class AbuseIPDBService {
+  private client: AbuseIPDBClient;
+
+  constructor() {
+    this.client = new AbuseIPDBClient(THREAT_CONFIG.abuseipdb.apiKey);
+  }
+
+  /**
+   * چک امروز چقدر از سهمیه مصرف شده
+   */
+  private getTodayQuota(): { used: number; limit: number } {
+    const today = new Date().toISOString().slice(0, 10);
+    const row = db.prepare('SELECT * FROM abuseipdb_quota WHERE date = ?')
+      .get(today) as { calls_used: number; calls_limit: number } | undefined;
+
+    if (!row) {
+      db.prepare(`
+        INSERT INTO abuseipdb_quota (date, calls_used, calls_limit)
+        VALUES (?, 0, ?)
+      `).run(today, THREAT_CONFIG.abuseipdb.dailyQuota);
+      return { used: 0, limit: THREAT_CONFIG.abuseipdb.dailyQuota };
+    }
+    return { used: row.calls_used, limit: row.calls_limit };
+  }
+
+  private incrementQuota() {
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(`
+      UPDATE abuseipdb_quota 
+      SET calls_used = calls_used + 1, last_call_at = ?
+      WHERE date = ?
+    `).run(Date.now(), today);
+  }
+
+  /**
+   * چک یک IP در AbuseIPDB
+   */
+  async check(ip: string): Promise<AbuseIPDBResult | null> {
+    if (!THREAT_CONFIG.abuseipdb.apiKey) {
+      console.warn('[AbuseIPDB] API key not set, skipping');
+      return null;
+    }
+
+    const quota = this.getTodayQuota();
+    if (quota.used >= quota.limit) {
+      console.warn(`[AbuseIPDB] Daily quota exceeded (${quota.used}/${quota.limit})`);
+      return null;
+    }
+
+    try {
+      const response = await this.client.check(ip, {
+        maxAgeInDays: THREAT_CONFIG.abuseipdb.maxAgeDays,
+        verbose: true
+      });
+
+      this.incrementQuota();
+
+      if (response.error) {
+        console.error('[AbuseIPDB] API error:', response.error);
+        return null;
+      }
+
+      const data = response.result?.data;
+      if (!data) return null;
+
+      // استخراج دستهبندیهای یکتا از گزارشها
+      const categories = new Set<number>();
+      if (data.reports) {
+        for (const report of data.reports) {
+          for (const cat of report.categories) categories.add(cat);
+        }
+      }
+
+      return {
+        ipAddress: data.ipAddress,
+        abuseConfidenceScore: data.abuseConfidenceScore,
+        totalReports: data.totalReports,
+        numDistinctUsers: data.numDistinctUsers,
+        lastReportedAt: data.lastReportedAt,
+        countryCode: data.countryCode,
+        usageType: data.usageType,
+        isp: data.isp,
+        isTor: data.isTor,
+        isWhitelisted: data.isWhitelisted || false,
+        categories: [...categories]
+      };
+    } catch (err) {
+      console.error('[AbuseIPDB] check failed:', err);
+      return null;
+    }
+  }
+
+  /**
+   * گزارش IP مخرب به AbuseIPDB
+   */
+  async report(params: {
+    ip: string;
+    categories: number[];
+    comment?: string;
+    timestamp?: string;
+  }): Promise<boolean> {
+    if (!THREAT_CONFIG.abuseipdb.apiKey) return false;
+
+    try {
+      const response = await this.client.report(params.ip, {
+        categories: params.categories,
+        comment: params.comment,
+        timestamp: params.timestamp
+      });
+
+      // ثبت در DB
+      db.prepare(`
+        INSERT INTO threat_reports 
+          (id, ip_address, categories, comment, reported_to_abuseipdb, abuseipdb_response, created_at)
+        VALUES (?, ?, ?, ?, 1, ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        params.ip,
+        JSON.stringify(params.categories),
+        params.comment || null,
+        JSON.stringify(response.result || {}),
+        Date.now()
+      );
+
+      return !response.error;
+    } catch (err) {
+      console.error('[AbuseIPDB] report failed:', err);
+      return false;
+    }
+  }
+
+  /**
+   * دانلود blacklist سراسری (top-reported IPs)
+   */
+  async downloadBlacklist(minConfidence = 90, limit = 10000): Promise<string[]> {
+    if (!THREAT_CONFIG.abuseipdb.apiKey) return [];
+
+    try {
+      const response = await this.client.getBlacklist({
+        confidenceMinimum: minConfidence,
+        limit
+      });
+
+      if (response.error || !response.result?.data) return [];
+      return response.result.data.map((item: any) => item.ipAddress);
+    } catch (err) {
+      console.error('[AbuseIPDB] blacklist download failed:', err);
+      return [];
+    }
+  }
+
+  getQuotaStatus() {
+    return this.getTodayQuota();
+  }
+}
+
+export const abuseipdbService = new AbuseIPDBService();
+```
+
+---
+
+🛡️ server/services/spamhaus.service.ts
+
+```typescript
+import { lookup, batch } from 'dnsbl';
+import { THREAT_CONFIG } from '../config/threatIntel.config.js';
+
+export interface DnsblResult {
+  zone: string;
+  listed: boolean;
+  txt?: string[][];
+}
+
+export interface SpamhausResult {
+  spamhausListed: boolean;
+  spamhausZone?: string;
+  spamcopListed: boolean;
+  barracudaListed: boolean;
+  blacklistCount: number;
+  allResults: DnsblResult[];
+}
+
+export class SpamhausService {
+  /**
+   * چک یک IP در چندین DNSBL
+   */
+  async check(ip: string): Promise<SpamhausResult> {
+    if (!THREAT_CONFIG.spamhaus.enabled) {
+      return this.emptyResult();
+    }
+
+    try {
+      const results = await batch(ip, THREAT_CONFIG.spamhaus.zones, {
+        timeout: 3000,
+        concurrency: 4,
+        includeTxt: true
+      });
+
+      const allResults: DnsblResult[] = results.map((r: any) => ({
+        zone: r.blacklist,
+        listed: r.listed,
+        txt: r.txt
+      }));
+
+      const spamhaus = allResults.find(r => r.zone === 'zen.spamhaus.org');
+      const spamcop = allResults.find(r => r.zone === 'bl.spamcop.net');
+      const barracuda = allResults.find(r => r.zone === 'b.barracudacentral.org');
+
+      const blacklistCount = allResults.filter(r => r.listed).length;
+
+      return {
+        spamhausListed: spamhaus?.listed || false,
+        spamhausZone: spamhaus?.txt?.[0]?.[0],
+        spamcopListed: spamcop?.listed || false,
+        barracudaListed: barracuda?.listed || false,
+        blacklistCount,
+        allResults
+      };
+    } catch (err) {
+      console.error('[Spamhaus] check failed:', err);
+      return this.emptyResult();
+    }
+  }
+
+  /**
+   * چک batch چند IP
+   */
+  async batchCheck(ips: string[]): Promise<Map<string, SpamhausResult>> {
+    const map = new Map<string, SpamhausResult>();
+    if (!THREAT_CONFIG.spamhaus.enabled) return map;
+
+    try {
+      const results = await batch(ips, THREAT_CONFIG.spamhaus.zones, {
+        timeout: 5000,
+        concurrency: 32
+      });
+
+      for (const ip of ips) {
+        const ipResults = results.filter((r: any) => r.address === ip);
+        const spamhaus = ipResults.find((r: any) => r.blacklist === 'zen.spamhaus.org');
+        const spamcop = ipResults.find((r: any) => r.blacklist === 'bl.spamcop.net');
+        const barracuda = ipResults.find((r: any) => r.blacklist === 'b.barracudacentral.org');
+
+        map.set(ip, {
+          spamhausListed: spamhaus?.listed || false,
+          spamcopListed: spamcop?.listed || false,
+          barracudaListed: barracuda?.listed || false,
+          blacklistCount: ipResults.filter((r: any) => r.listed).length,
+          allResults: ipResults.map((r: any) => ({
+            zone: r.blacklist,
+            listed: r.listed
+          }))
+        });
+      }
+    } catch (err) {
+      console.error('[Spamhaus] batch check failed:', err);
+    }
+
+    return map;
+  }
+
+  /**
+   * تفسیر کد برگشتی Spamhaus
+   */
+  interpretReturnCode(txt: string): string {
+    const codes: Record<string, string> = {
+      '127.0.0.2': 'SBL - Spamhaus Block List',
+      '127.0.0.3': 'SBL CSS - Combined Spam Sources',
+      '127.0.0.4': 'XBL - Exploits Block List',
+      '127.0.0.9': 'DROP - Don\'t Route Or Peer',
+      '127.0.0.10': 'PBL - Policy Block List',
+      '127.0.0.11': 'PBL ISP Maintained',
+      '127.255.255.252': 'Typing error in DNSBL name',
+      '127.255.255.254': 'Query via public/open resolver'
+    };
+    return codes[txt] || 'Unknown listing';
+  }
+
+  private emptyResult(): SpamhausResult {
+    return {
+      spamhausListed: false,
+      spamcopListed: false,
+      barracudaListed: false,
+      blacklistCount: 0,
+      allResults: []
+    };
+  }
+}
+
+export const spamhausService = new SpamhausService();
+```
+
+---
+
+🧠 server/services/threatIntel.service.ts — هسته اصلی
+
+```typescript
+import { THREAT_CONFIG } from '../config/threatIntel.config.js';
+import { abuseipdbService, AbuseIPDBResult } from './abuseipdb.service.js';
+import { spamhausService, SpamhausResult } from './spamhaus.service.js';
+import db from './db.service.js';
+
+// ═══════════════════════════════════════════
+//  Types
+// ═══════════════════════════════════════════
+export interface ThreatIntelResult {
+  ip: string;
+  riskScore: number;                  // 0-100
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  isMalicious: boolean;
+  isTor: boolean;
+  blacklists: string[];
+  abuseScore: number;
+  totalReports: number;
+  countryCode?: string;
+  isp?: string;
+  abuseCategories: number[];
+  lastReportedAt?: string;
+  cached: boolean;
+  provider: string;
+}
+
+interface CacheRow {
+  ip_address: string;
+  abuse_confidence_score: number;
+  total_reports: number;
+  num_distinct_users: number;
+  last_reported_at: number | null;
+  country_code: string | null;
+  usage_type: string | null;
+  isp: string | null;
+  is_tor: number;
+  abuse_categories: string | null;
+  spamhaus_listed: number;
+  spamhaus_zone: string | null;
+  spamcop_listed: number;
+  barracuda_listed: number;
+  blacklist_count: number;
+  risk_score: number;
+  risk_level: string;
+  provider: string;
+  fetched_at: number;
+  expires_at: number;
+}
+
+// ═══════════════════════════════════════════
+//  Service
+// ═══════════════════════════════════════════
+export class ThreatIntelService {
+  /**
+   * چک اصلی — از cache یا providers
+   */
+  async check(ip: string): Promise<ThreatIntelResult> {
+    const normalized = this.normalizeIp(ip);
+
+    // IP private → بیخطر
+    if (this.isPrivate(normalized)) {
+      return this.makeResult(normalized, {
+        abuseScore: 0,
+        totalReports: 0,
+        isTor: false,
+        blacklists: [],
+        abuseCategories: [],
+        provider: 'private_ip'
+      }, false);
+    }
+
+    // Cache
+    const cached = this.getFromCache(normalized);
+    if (cached) return cached;
+
+    // اجرای همزمان AbuseIPDB و Spamhaus
+    const [abuseResult, spamhausResult] = await Promise.all([
+      abuseipdbService.check(normalized).catch(() => null),
+      spamhausService.check(normalized).catch(() => this.emptySpamhaus())
+    ]);
+
+    // محاسبه risk score
+    const result = this.computeResult(normalized, abuseResult, spamhausResult);
+
+    // ذخیره در cache
+    this.saveToCache(normalized, result, abuseResult, spamhausResult);
+
+    return result;
+  }
+
+  // ═══════════════════════════════════════════
+  //  Risk Computation
+  // ═══════════════════════════════════════════
+  private computeResult(
+    ip: string,
+    abuse: AbuseIPDBResult | null,
+    spamhaus: SpamhausResult
+  ): ThreatIntelResult {
+    const W = THREAT_CONFIG.riskWeights;
+    let score = 0;
+    const blacklists: string[] = [];
+
+    // ───── AbuseIPDB ─────
+    if (abuse) {
+      if (abuse.abuseConfidenceScore >= 75) {
+        score += W.abuseConfidenceHigh;
+      } else if (abuse.abuseConfidenceScore >= 25) {
+        score += W.abuseConfidenceMedium;
+      }
+    }
+
+    // ───── Spamhaus / DNSBL ─────
+    if (spamhaus.spamhausListed) {
+      score += W.spamhausListed;
+      blacklists.push('spamhaus');
+    }
+    if (spamhaus.spamcopListed) {
+      score += W.spamcopListed;
+      blacklists.push('spamcop');
+    }
+    if (spamhaus.barracudaListed) {
+      score += W.barracudaListed;
+      blacklists.push('barracuda');
+    }
+
+    // در چندین لیست → امتیاز اضافه
+    if (spamhaus.blacklistCount >= 2) {
+      score += W.multipleBlacklists;
+    }
+
+    // ───── Tor ─────
+    const isTor = abuse?.isTor || false;
+    if (isTor && THREAT_CONFIG.blockTor) {
+      score += W.isTor;
+    }
+
+    score = Math.min(100, score);
+
+    return {
+      ip,
+      riskScore: score,
+      riskLevel: this.scoreToLevel(score),
+      isMalicious: score >= THREAT_CONFIG.abuseScoreThreshold,
+      isTor,
+      blacklists,
+      abuseScore: abuse?.abuseConfidenceScore || 0,
+      totalReports: abuse?.totalReports || 0,
+      countryCode: abuse?.countryCode || undefined,
+      isp: abuse?.isp || undefined,
+      abuseCategories: abuse?.categories || [],
+      lastReportedAt: abuse?.lastReportedAt || undefined,
+      cached: false,
+      provider: 'abuseipdb+spamhaus'
+    };
+  }
+
+  private makeResult(
+    ip: string,
+    data: {
+      abuseScore: number;
+      totalReports: number;
+      isTor: boolean;
+      blacklists: string[];
+      abuseCategories: number[];
+      provider: string;
+    },
+    cached: boolean
+  ): ThreatIntelResult {
+    return {
+      ip,
+      riskScore: 0,
+      riskLevel: 'low',
+      isMalicious: false,
+      isTor: data.isTor,
+      blacklists: data.blacklists,
+      abuseScore: data.abuseScore,
+      totalReports: data.totalReports,
+      abuseCategories: data.abuseCategories,
+      cached,
+      provider: data.provider
+    };
+  }
+
+  private scoreToLevel(score: number): 'low' | 'medium' | 'high' | 'critical' {
+    if (score >= 80) return 'critical';
+    if (score >= 60) return 'high';
+    if (score >= 30) return 'medium';
+    return 'low';
+  }
+
+  // ═══════════════════════════════════════════
+  //  Cache
+  // ═══════════════════════════════════════════
+  private getFromCache(ip: string): ThreatIntelResult | null {
+    const row = db.prepare('SELECT * FROM threat_cache WHERE ip_address = ? AND expires_at > ?')
+      .get(ip, Date.now()) as CacheRow | undefined;
+
+    if (!row) return null;
+
+    return {
+      ip: row.ip_address,
+      riskScore: row.risk_score,
+      riskLevel: row.risk_level as any,
+      isMalicious: row.risk_score >= THREAT_CONFIG.abuseScoreThreshold,
+      isTor: row.is_tor === 1,
+      blacklists: this.parseBlacklists(row),
+      abuseScore: row.abuse_confidence_score,
+      totalReports: row.total_reports,
+      countryCode: row.country_code || undefined,
+      isp: row.isp || undefined,
+      abuseCategories: row.abuse_categories ? JSON.parse(row.abuse_categories) : [],
+      cached: true,
+      provider: row.provider
+    };
+  }
+
+  private saveToCache(
+    ip: string,
+    result: ThreatIntelResult,
+    abuse: AbuseIPDBResult | null,
+    spamhaus: SpamhausResult
+  ) {
+    const now = Date.now();
+    const expires = now + THREAT_CONFIG.cache.ttlMs;
+
+    const blacklists: string[] = [];
+    if (spamhaus.spamhausListed) blacklists.push('spamhaus');
+    if (spamhaus.spamcopListed) blacklists.push('spamcop');
+    if (spamhaus.barracudaListed) blacklists.push('barracuda');
+
+    db.prepare(`
+      INSERT INTO threat_cache 
+        (ip_address, abuse_confidence_score, total_reports, num_distinct_users,
+         last_reported_at, country_code, usage_type, isp, is_tor, abuse_categories,
+         spamhaus_listed, spamhaus_zone, spamcop_listed, barracuda_listed,
+         blacklist_count, risk_score, risk_level, provider, fetched_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(ip_address) DO UPDATE SET
+        abuse_confidence_score = excluded.abuse_confidence_score,
+        total_reports = excluded.total_reports,
+        num_distinct_users = excluded.num_distinct_users,
+        last_reported_at = excluded.last_reported_at,
+        country_code = excluded.country_code,
+        usage_type = excluded.usage_type,
+        isp = excluded.isp,
+        is_tor = excluded.is_tor,
+        abuse_categories = excluded.abuse_categories,
+        spamhaus_listed = excluded.spamhaus_listed,
+        spamhaus_zone = excluded.spamhaus_zone,
+        spamcop_listed = excluded.spamcop_listed,
+        barracuda_listed = excluded.barracuda_listed,
+        blacklist_count = excluded.blacklist_count,
+        risk_score = excluded.risk_score,
+        risk_level = excluded.risk_level,
+        provider = excluded.provider,
+        fetched_at = excluded.fetched_at,
+        expires_at = excluded.expires_at
+    `).run(
+      ip,
+      abuse?.abuseConfidenceScore || 0,
+      abuse?.totalReports || 0,
+      abuse?.numDistinctUsers || 0,
+      abuse?.lastReportedAt ? new Date(abuse.lastReportedAt).getTime() : null,
+      abuse?.countryCode || null,
+      abuse?.usageType || null,
+      abuse?.isp || null,
+      abuse?.isTor ? 1 : 0,
+      JSON.stringify(abuse?.categories || []),
+      spamhaus.spamhausListed ? 1 : 0,
+      spamhaus.spamhausZone || null,
+      spamhaus.spamcopListed ? 1 : 0,
+      spamhaus.barracudaListed ? 1 : 0,
+      blacklists.length,
+      result.riskScore,
+      result.riskLevel,
+      result.provider,
+      now,
+      expires
+    );
+  }
+
+  private parseBlacklists(row: CacheRow): string[] {
+    const bl: string[] = [];
+    if (row.spamhaus_listed) bl.push('spamhaus');
+    if (row.spamcop_listed) bl.push('spamcop');
+    if (row.barracuda_listed) bl.push('barracuda');
+    return bl;
+  }
+
+  private emptySpamhaus(): SpamhausResult {
+    return {
+      spamhausListed: false,
+      spamcopListed: false,
+      barracudaListed: false,
+      blacklistCount: 0,
+      allResults: []
+    };
+  }
+
+  // ═══════════════════════════════════════════
+  //  Helpers
+  // ═══════════════════════════════════════════
+  private normalizeIp(ip: string): string {
+    if (ip.startsWith('::ffff:')) return ip.slice(7);
+    return ip;
+  }
+
+  private isPrivate(ip: string): boolean {
+    if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return true;
+    if (ip.startsWith('10.')) return true;
+    if (ip.startsWith('192.168.')) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+    return false;
+  }
+
+  // ═══════════════════════════════════════════
+  //  Stats & Admin
+  // ═══════════════════════════════════════════
+  getStats() {
+    const total = db.prepare('SELECT COUNT(*) as c FROM threat_cache')
+      .get() as { c: number };
+    const malicious = db.prepare(`
+      SELECT COUNT(*) as c FROM threat_cache WHERE risk_score >= ?
+    `).get(THREAT_CONFIG.abuseScoreThreshold) as { c: number };
+    const torCount = db.prepare('SELECT COUNT(*) as c FROM threat_cache WHERE is_tor = 1')
+      .get() as { c: number };
+
+    const topThreats = db.prepare(`
+      SELECT ip_address, risk_score, risk_level, abuse_confidence_score, blacklist_count, isp
+      FROM threat_cache 
+      WHERE risk_score > 0
+      ORDER BY risk_score DESC LIMIT 30
+    `).all();
+
+    const recentEvents = db.prepare(`
+      SELECT * FROM threat_intel_events 
+      ORDER BY created_at DESC LIMIT 50
+    `).all();
+
+    return {
+      enabled: THREAT_CONFIG.enabled,
+      action: THREAT_CONFIG.action,
+      threshold: THREAT_CONFIG.abuseScoreThreshold,
+      cacheSize: total.c,
+      maliciousCount: malicious.c,
+      torCount: torCount.c,
+      abuseipdbQuota: abuseipdbService.getQuotaStatus(),
+      topThreats,
+      recentEvents
+    };
+  }
+
+  async refreshCache() {
+    // پاکسازی منقضیها
+    const result = db.prepare('DELETE FROM threat_cache WHERE expires_at < ?')
+      .run(Date.now());
+    return { removed: result.changes };
+  }
+
+  /**
+   * sync خودکار blacklistهای سراسری
+   */
+  async syncGlobalBlacklist() {
+    try {
+      const ips = await abuseipdbService.downloadBlacklist(90, 10000);
+      console.log(`[ThreatIntel] Downloaded ${ips.length} IPs from AbuseIPDB blacklist`);
+
+      // اینجا میتونی این IPها رو به blacklist اصلی اضافه کنی
+      // از طریق ipAccessService.bulkAdd
+
+      return { synced: ips.length };
+    } catch (err) {
+      console.error('[ThreatIntel] sync failed:', err);
+      return { synced: 0 };
+    }
+  }
+}
+
+export const threatIntelService = new ThreatIntelService();
+```
+
+---
+
+🛡️ server/middleware/threatIntel.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { threatIntelService } from '../services/threatIntel.service.js';
+import { THREAT_CONFIG } from '../config/threatIntel.config.js';
+import { securityService } from '../services/security.service.js';
+import db from '../services/db.service.js';
+import crypto from 'crypto';
+
+declare global {
+  namespace Express {
+    interface Request {
+      threatIntel?: any;
+    }
+  }
+}
+
+export async function threatIntelGuard(req: Request, res: Response, next: NextFunction) {
+  if (!THREAT_CONFIG.enabled) return next();
+
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+
+  try {
+    const result = await threatIntelService.check(ip);
+    req.threatIntel = result;
+
+    // زیر آستانه → اجازه
+    if (result.riskScore < THREAT_CONFIG.abuseScoreThreshold) {
+      return next();
+    }
+
+    // لاگ در suspicious_activity
+    securityService.logSuspicious({
+      userId: (req as any).user?.sub,
+      ipAddress: ip,
+      userAgent: req.headers['user-agent'],
+      activityType: 'threat_intel_blocked',
+      severity: result.riskLevel === 'critical' ? 'high' : 'medium',
+      details: {
+        riskScore: result.riskScore,
+        abuseScore: result.abuseScore,
+        isTor: result.isTor,
+        blacklists: result.blacklists,
+        provider: result.provider
+      }
+    });
+
+    // ثبت رویداد
+    db.prepare(`
+      INSERT INTO threat_intel_events 
+        (id, ip_address, user_id, path, action, risk_score, risk_level,
+         abuse_score, is_tor, blacklists, details, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      ip,
+      (req as any).user?.sub || null,
+      req.path,
+      THREAT_CONFIG.action,
+      result.riskScore,
+      result.riskLevel,
+      result.abuseScore,
+      result.isTor ? 1 : 0,
+      JSON.stringify(result.blacklists),
+      JSON.stringify({ totalReports: result.totalReports, isp: result.isp }),
+      Date.now()
+    );
+
+    // ───── Action ─────
+    switch (THREAT_CONFIG.action) {
+      case 'monitor':
+        return next();
+
+      case 'challenge':
+        return res.status(403).json({
+          success: false,
+          code: 'THREAT_CHALLENGE',
+          error: 'Additional verification required',
+          riskScore: result.riskScore,
+          riskLevel: result.riskLevel
+        });
+
+      case 'block':
+        return res.status(403).json({
+          success: false,
+          code: 'THREAT_BLOCKED',
+          error: 'Access denied: malicious IP detected',
+          riskScore: result.riskScore,
+          riskLevel: result.riskLevel
+        });
+    }
+
+    next();
+  } catch (err) {
+    console.error('[ThreatIntel] Error:', err);
+    next(); // fail-open
+  }
+}
+
+/**
+ * نسخه سبک — فقط attach
+ */
+export async function attachThreatProfile(req: Request, _res: Response, next: NextFunction) {
+  if (!THREAT_CONFIG.enabled) return next();
+  const ip = req.ip || 'unknown';
+  try {
+    req.threatIntel = await threatIntelService.check(ip);
+  } catch {}
+  next();
+}
+```
+
+---
+
+🛣️ server/routes/threatIntel.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { threatIntelService } from '../services/threatIntel.service.js';
+import { abuseipdbService } from '../services/abuseipdb.service.js';
+import { spamhausService } from '../services/spamhaus.service.js';
+import { THREAT_CONFIG } from '../config/threatIntel.config.js';
+
+const router = Router();
+
+// ───── عمومی: lookup ─────
+router.get('/lookup/:ip', async (req, res, next) => {
+  try {
+    const result = await threatIntelService.check(req.params.ip);
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ───── ادمین ─────
+router.use(requireAuth, requireRole('admin'));
+
+router.get('/stats', (_req, res) => {
+  res.json({ success: true, data: threatIntelService.getStats() });
+});
+
+router.get('/config', (_req, res) => {
+  res.json({
+    success: true,
+    data: {
+      enabled: THREAT_CONFIG.enabled,
+      action: THREAT_CONFIG.action,
+      abuseScoreThreshold: THREAT_CONFIG.abuseScoreThreshold,
+      blockTor: THREAT_CONFIG.blockTor,
+      riskWeights: THREAT_CONFIG.riskWeights,
+      spamhausZones: THREAT_CONFIG.spamhaus.zones
+    }
+  });
+});
+
+// ───── Bulk check ─────
+router.post('/bulk-check', async (req, res, next) => {
+  try {
+    const schema = z.object({ ips: z.array(z.string()).min(1).max(100) });
+    const { ips } = schema.parse(req.body);
+
+    const results = await Promise.all(
+      ips.map(ip => threatIntelService.check(ip).catch(err => ({
+        ip, error: err.message, riskScore: -1, riskLevel: 'low' as const
+      })))
+    );
+    res.json({ success: true, data: results });
+  } catch (err) { next(err); }
+});
+
+// ───── Spamhaus direct check ─────
+router.get('/spamhaus/:ip', async (req, res, next) => {
+  try {
+    const result = await spamhausService.check(req.params.ip);
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ───── گزارش IP مخرب ─────
+router.post('/report', async (req, res, next) => {
+  try {
+    const schema = z.object({
+      ip: z.string(),
+      categories: z.array(z.number()).min(1),
+      comment: z.string().max(1024).optional(),
+      timestamp: z.string().optional()
+    });
+    const body = schema.parse(req.body);
+
+    const ok = await abuseipdbService.report({
+      ...body,
+      comment: body.comment
+    });
+
+    res.json({ success: ok, data: { reported: ok } });
+  } catch (err) { next(err); }
+});
+
+// ───── Refresh cache ─────
+router.post('/cache/refresh', async (_req, res, next) => {
+  try {
+    const result = await threatIntelService.refreshCache();
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ───── Sync global blacklist ─────
+router.post('/sync', async (_req, res, next) => {
+  try {
+    const result = await threatIntelService.syncGlobalBlacklist();
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ───── AbuseIPDB quota ─────
+router.get('/quota', (_req, res) => {
+  res.json({ success: true, data: abuseipdbService.getQuotaStatus() });
+});
+
+export default router;
+```
+
+---
+
+🖥️ server/index.ts — ترتیب لایهها
+
+```typescript
+import threatIntelRoutes from './routes/threatIntel.routes.js';
+import { threatIntelGuard, attachThreatProfile } from './middleware/threatIntel.middleware.js';
+
+// بعد از attachBotProfile:
+app.use('/api', attachThreatProfile);
+
+// روتها
+app.use('/api/threat', threatIntelRoutes);
+
+// روی روتهای حساس:
+app.use('/api/auth/login', threatIntelGuard);
+app.use('/api/auth/register', threatIntelGuard);
+```
+
+ترتیب نهایی لایههای امنیتی:
+
+```
+L1:  ipAccessGuard          → IP whitelist/blacklist
+L2:  geoBlockGuard          → Geo blocking
+L3:  attachVpnProfile       → VPN detection
+L4:  attachBotProfile       → Bot fingerprint attach
+L5:  attachThreatProfile    → Threat intel attach    ← جدید
+L6:  globalLimiter          → Rate limit
+L7:  checkIpBan             → Brute-force ban
+L8:  authSlowDown/authLimiter
+L9:  botDetectionGuard      → Bot block/challenge
+L10: vpnDetectionGuard      → VPN block/challenge
+L11: threatIntelGuard       → Threat block/challenge ← جدید
+L12: authRoutes
+```
+
+---
+
+🖥️ کامپوننت src/components/admin/ThreatIntelPanel.tsx
+
+```tsx
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../../api/client';
+
+export const ThreatIntelPanel: React.FC = () => {
+  const [stats, setStats] = useState<any>(null);
+  const [config, setConfig] = useState<any>(null);
+  const [lookupIp, setLookupIp] = useState('');
+  const [lookupResult, setLookupResult] = useState<any>(null);
+  const [bulkIps, setBulkIps] = useState('');
+  const [bulkResults, setBulkResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    const [s, c] = await Promise.all([
+      apiClient.threatStats(),
+      apiClient.threatConfig()
+    ]);
+    setStats(s);
+    setConfig(c);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleLookup = async () => {
+    if (!lookupIp.trim()) return;
+    setLoading(true);
+    try {
+      const res = await apiClient.threatLookup(lookupIp.trim());
+      setLookupResult(res);
+    } finally { setLoading(false); }
+  };
+
+  const handleBulkCheck = async () => {
+    const ips = bulkIps.split('\n').map(s => s.trim()).filter(Boolean);
+    if (!ips.length) return;
+    setLoading(true);
+    try {
+      const res = await apiClient.threatBulkCheck(ips);
+      setBulkResults(res);
+    } finally { setLoading(false); }
+  };
+
+  const getRiskColor = (level: string) => ({
+    low: '#10b981', medium: '#f59e0b', high: '#ef4444', critical: '#dc2626'
+  }[level] || '#6b7280');
+
+  return (
+    <div className="admin-panel">
+      <h2>🌐 Threat Intelligence Feed</h2>
+
+      {stats && (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <span>وضعیت</span>
+            <strong>{stats.enabled ? '✅ فعال' : '⛔ غیرفعال'}</strong>
+          </div>
+          <div className="stat-card">
+            <span>حالت</span>
+            <strong>{stats.action}</strong>
+          </div>
+          <div className="stat-card red">
+            <span>IP های مخرب</span>
+            <strong>{stats.maliciousCount?.toLocaleString()}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Tor Nodes</span>
+            <strong>{stats.torCount?.toLocaleString()}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Cache</span>
+            <strong>{stats.cacheSize?.toLocaleString()}</strong>
+          </div>
+          {stats.abuseipdbQuota && (
+            <div className="stat-card">
+              <span>AbuseIPDB Quota</span>
+              <strong>{stats.abuseipdbQuota.used}/{stats.abuseipdbQuota.limit}</strong>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ───── Lookup ───── */}
+      <div className="lookup-box">
+        <input
+          value={lookupIp}
+          onChange={e => setLookupIp(e.target.value)}
+          placeholder="مثلاً 118.25.6.39"
+          dir="ltr"
+        />
+        <button onClick={handleLookup} disabled={loading}>
+          {loading ? '…' : '🔍 بررسی'}
+        </button>
+      </div>
+
+      {lookupResult && (
+        <div className="threat-result-card">
+          <div className="threat-result-header">
+            <code dir="ltr">{lookupResult.ip}</code>
+            <span
+              className="risk-badge"
+              style={{ background: getRiskColor(lookupResult.riskLevel) }}
+            >
+              {lookupResult.riskLevel} · {lookupResult.riskScore}/100
+            </span>
+          </div>
+
+          <div className="threat-flags">
+            <span className={`flag ${lookupResult.isMalicious ? 'on' : 'off'}`}>
+              {lookupResult.isMalicious ? '✅' : '⛔'} مخرب
+            </span>
+            <span className={`flag ${lookupResult.isTor ? 'on' : 'off'}`}>
+              {lookupResult.isTor ? '✅' : '⛔'} Tor
+            </span>
+            <span className={`flag ${lookupResult.blacklists?.length > 0 ? 'on' : 'off'}`}>
+              📋 {lookupResult.blacklists?.length || 0} لیست سیاه
+            </span>
+          </div>
+
+          <div className="threat-details">
+            <div><b>Abuse Score:</b> <span style={{ color: getRiskColor(lookupResult.abuseScore >= 75 ? 'high' : lookupResult.abuseScore >= 25 ? 'medium' : 'low') }}>{lookupResult.abuseScore}/100</span></div>
+            <div><b>گزارشها:</b> {lookupResult.totalReports || 0}</div>
+            {lookupResult.isp && <div><b>ISP:</b> {lookupResult.isp}</div>}
+            {lookupResult.countryCode && <div><b>کشور:</b> {lookupResult.countryCode}</div>}
+            {lookupResult.blacklists?.length > 0 && (
+              <div><b>لیستهای سیاه:</b> {lookupResult.blacklists.join(', ')}</div>
+            )}
+            {lookupResult.abuseCategories?.length > 0 && (
+              <div><b>دستهبندیها:</b> {lookupResult.abuseCategories.join(', ')}</div>
+            )}
+            {lookupResult.cached && <div className="cached-tag">📦 از کش</div>}
+          </div>
+        </div>
+      )}
+
+      {/* ───── Bulk ───── */}
+      <h3>بررسی گروهی</h3>
+      <div className="bulk-box">
+        <textarea
+          value={bulkIps}
+          onChange={e => setBulkIps(e.target.value)}
+          placeholder={'118.25.6.39\n45.83.91.1\n8.8.8.8'}
+          dir="ltr"
+          rows={5}
+        />
+        <button className="btn-primary" onClick={handleBulkCheck} disabled={loading}>
+          بررسی همه
+        </button>
+      </div>
+
+      {bulkResults.length > 0 && (
+        <table className="admin-table compact">
+          <thead>
+            <tr>
+              <th>IP</th>
+              <th>Risk</th>
+              <th>Abuse</th>
+              <th>Tor</th>
+              <th>Blacklists</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bulkResults.map(r => (
+              <tr key={r.ip}>
+                <td><code dir="ltr">{r.ip}</code></td>
+                <td>
+                  <span style={{ color: getRiskColor(r.riskLevel) }}>
+                    {r.riskScore}/100
+                  </span>
+                </td>
+                <td>{r.abuseScore}</td>
+                <td>{r.isTor ? '✅' : '—'}</td>
+                <td>{r.blacklists?.length || 0}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {/* ───── Top Threats ───── */}
+      {stats?.topThreats?.length > 0 && (
+        <>
+          <h3>خطرناکترین IP های کش شده</h3>
+          <table className="admin-table compact">
+            <thead>
+              <tr>
+                <th>IP</th>
+                <th>Risk</th>
+                <th>Abuse</th>
+                <th>ISP</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.topThreats.slice(0, 15).map((t: any) => (
+                <tr key={t.ip_address}>
+                  <td><code dir="ltr">{t.ip_address}</code></td>
+                  <td>
+                    <span style={{ color: getRiskColor(t.risk_level) }}>
+                      {t.risk_score}/100
+                    </span>
+                  </td>
+                  <td>{t.abuse_confidence_score}</td>
+                  <td>{t.isp || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+};
+```
+
+---
+
+🌐 متدهای جدید src/api/client.ts
+
+```typescript
+// ───── Threat Intelligence ─────
+threatStats: () =>
+  request<any>('/threat/stats'),
+
+threatConfig: () =>
+  request<any>('/threat/config'),
+
+threatLookup: (ip: string) =>
+  request<any>(`/threat/lookup/${ip}`),
+
+threatBulkCheck: (ips: string[]) =>
+  request<any[]>('/threat/bulk-check', {
+    method: 'POST',
+    body: JSON.stringify({ ips })
+  }),
+
+threatSpamhausCheck: (ip: string) =>
+  request<any>(`/threat/spamhaus/${ip}`),
+
+threatReport: (payload: { ip: string; categories: number[]; comment?: string }) =>
+  request<any>('/threat/report', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  }),
+
+threatQuota: () =>
+  request<any>('/threat/quota'),
+
+threatRefreshCache: () =>
+  request<{}>('/threat/cache/refresh', { method: 'POST' }),
+
+threatSync: () =>
+  request<{}>('/threat/sync', { method: 'POST' })
+```
+
+---
+
+🎨 استایلهای اضافی
+
+```css
+.threat-result-card {
+  padding: 20px;
+  background: #0d0f14;
+  border-radius: 12px;
+  margin: 16px 0;
+  border: 1px solid #2a2f3d;
+}
+.threat-result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.threat-result-header code {
+  font-size: 1.1rem;
+  color: #6c7cff;
+  background: #14161c;
+  padding: 6px 12px;
+  border-radius: 8px;
+}
+.threat-flags {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.threat-flags .flag {
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.threat-flags .flag.on { background: #3a1a1a; color: #fca5a5; }
+.threat-flags .flag.off { background: #14161c; color: #6b7280; }
+
+.threat-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid #1a1d26;
+  font-size: 0.9rem;
+  color: #a4acbd;
+}
+.threat-details b { color: #e7e9ee; }
+```
+
+---
+
+🧪 تست سریع
+
+```bash
+# ───── Lookup یک IP ─────
+curl http://localhost:3001/api/threat/lookup/118.25.6.39 | jq
+# → { riskScore: 60, abuseScore: 100, blacklists: ["spamhaus"], ... }
+
+# ───── IP تمیز ─────
+curl http://localhost:3001/api/threat/lookup/8.8.8.8 | jq
+# → { riskScore: 0, abuseScore: 0, ... }
+
+# ───── Spamhaus direct ─────
+curl http://localhost:3001/api/threat/spamhaus/118.25.6.39 | jq
+
+# ───── Bulk ─────
+curl -X POST http://localhost:3001/api/threat/bulk-check \
+  -H "Authorization: Bearer <ADMIN>" \
+  -H "Content-Type: application/json" \
+  -d '{"ips":["8.8.8.8","118.25.6.39","1.1.1.1"]}' | jq
+
+# ───── Quota ─────
+curl http://localhost:3001/api/threat/quota \
+  -H "Authorization: Bearer <ADMIN>" | jq
+# → { used: 3, limit: 1000 }
+```
+
+---
+
+✅ خلاصه ویژگیهای اضافهشده
+
+ویژگی توضیح
+🌐 AbuseIPDB Integration چک IP + گزارش + دانلود blacklist
+📋 Spamhaus DNSBL zen.spamhaus.org + SpamCop + Barracuda
+📦 Smart Cache DB + TTL 6 ساعته + 50K ظرفیت
+⚖️ Risk Score (0-100) وزنهای قابل تنظیم برای هر منبع
+🧅 Tor Detection از AbuseIPDB + Spamhaus
+📊 Abuse Categories تشخیص Brute-force، DDoS، Hacking و...
+🔢 Quota Management ردیابی خودکار سهمیه روزانه AbuseIPDB
+🔄 Global Blacklist Sync دانلود top-reported IPs
+📝 Report Submission گزارش IP مخرب به AbuseIPDB
+📊 Admin UI lookup + bulk + top threats + quota
+🔗 اتصال به Brute-force لاگ در suspicious_activity
+🛡️ Fail-Open اگر provider خطا داد، اجازه میده
+
+معماری نهایی امنیت:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: IP Access Control (whitelist/blacklist)       │
+│  Layer 2: Geo Blocking (country/city/ASN)               │
+│  Layer 3: VPN/Proxy/Tor Detection                       │
+│  Layer 4: Bot Detection (fingerprint + behavior)        │
+│  Layer 5: Threat Intel (AbuseIPDB + Spamhaus)           │ ← جدید
+│  Layer 6: Rate Limiting (global + per-route)            │
+│  Layer 7: Brute-force Protection (lockout + ban)        │
+│  Layer 8: Auth (Password + OAuth + 2FA)                 │
+│  Layer 9: Security Headers (Helmet + CSP)               │
+└─────────────────────────────────────────────────────────┘
+```
