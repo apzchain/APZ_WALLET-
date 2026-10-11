@@ -1,0 +1,1864 @@
+
+---
+
+📦 نصب پکیج‌های جدید
+
+```bash
+npm install ipaddr.js maxmind geoip-lite node-cron
+npm install -D @types/maxmind @types/geoip-lite
+```
+
+💡 دو گزینه برای GeoIP:
+
+· geoip-lite → آفلاین، بدون API key، دیتای MaxMind رو خودش دانلود می‌کنه (سریع، مناسب dev)
+· maxmind → رسمی، نیاز به فایل .mmdb (دقیق‌تر، مناسب production)
+
+اینجا geoip-lite رو پیش‌فرض می‌گیرم و مسیر ارتقا به maxmind رو هم نشون می‌دم.
+
+---
+
+🗂️ ساختار اضافه‌شده
+
+```text
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── geo.config.ts                  ← جدید
+│   ├── data/
+│   │   └── geoip/                         ← دیتابیس MaxMind (اختیاری)
+│   ├── services/
+│   │   ├── ipAccess.service.ts            ← جدید (whitelist/blacklist)
+│   │   └── geoBlocking.service.ts         ← جدید
+│   ├── middleware/
+│   │   ├── ipAccess.middleware.ts         ← جدید
+│   │   └── geoBlocking.middleware.ts      ← جدید
+│   └── routes/
+│       ├── ipAccess.routes.ts             ← جدید (admin)
+│       └── geo.routes.ts                  ← جدید (admin)
+└── src/
+    └── components/
+        ├── admin/
+        │   ├── IpAccessPanel.tsx          ← جدید
+        │   └── GeoBlockingPanel.tsx       ← جدید
+        └── GeoBlockedPage.tsx             ← جدید
+```
+
+---
+
+⚙️ .env.example — اضافه کن
+
+```env
+# ───── IP Access Control ─────
+# حالت پیش‌فرض: 'allow_all' (فقط blacklist فعال) یا 'deny_all' (فقط whitelist فعال)
+IP_ACCESS_MODE=allow_all
+# آیا IP های localhost همیشه مجاز باشند؟
+ALLOW_LOCALHOST=true
+# آیا IP های private (RFC1918) مجاز باشند؟
+ALLOW_PRIVATE_IPS=true
+
+# ───── Geolocation ─────
+# فعال/غیرفعال بودن Geo-blocking
+GEO_BLOCKING_ENABLED=false
+# حالت پیش‌فرض geo: 'allow_all' | 'block_list' | 'allow_list'
+GEO_MODE=block_list
+# کشورهای ممنوع (comma-separated ISO codes)
+BLOCKED_COUNTRIES=KP,IR,SY,CU
+# کشورهای مجاز (وقتی GEO_MODE=allow_list)
+ALLOWED_COUNTRIES=US,DE,FR,GB,CA,AU
+# مسیر دیتابیس MaxMind (اختیاری — اگر خالی باشه از geoip-lite استفاده می‌کنه)
+MAXMIND_DB_PATH=
+# اگر IP قابل تشخیص نبود، اجازه بده؟ (true = fail-open)
+GEO_FAIL_OPEN=true
+```
+
+---
+
+⚙️ server/config/geo.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const IP_ACCESS_CONFIG = {
+  mode: (process.env.IP_ACCESS_MODE || 'allow_all') as 'allow_all' | 'deny_all',
+  allowLocalhost: process.env.ALLOW_LOCALHOST !== 'false',
+  allowPrivateIps: process.env.ALLOW_PRIVATE_IPS !== 'false',
+  // TTL کش برای چک‌ها (کاهش query به DB)
+  cacheTtlMs: 60_000
+};
+
+export const GEO_CONFIG = {
+  enabled: process.env.GEO_BLOCKING_ENABLED === 'true',
+  mode: (process.env.GEO_MODE || 'block_list') as 'allow_all' | 'block_list' | 'allow_list',
+  blockedCountries: (process.env.BLOCKED_COUNTRIES || '').split(',').map(c => c.trim()).filter(Boolean),
+  allowedCountries: (process.env.ALLOWED_COUNTRIES || '').split(',').map(c => c.trim()).filter(Boolean),
+  // لیست سفید برای روت‌های حساس (مثلاً فقط ایران بتونه لاگین کنه)
+  highRiskCountries: ['KP', 'SY', 'CU', 'IR'],
+  maxmindDbPath: process.env.MAXMIND_DB_PATH || '',
+  failOpen: process.env.GEO_FAIL_OPEN !== 'false', // اگر IP نامشخص → اجازه بده
+  // فیلدهایی که در پروفایل IP ذخیره می‌شه
+  trackedFields: ['country', 'city', 'region', 'timezone', 'asn', 'isp'] as const
+};
+```
+
+---
+
+🗄️ به‌روزرسانی server/services/db.service.ts
+
+```typescript
+db.exec(`
+  -- ───── IP Access List ─────
+  CREATE TABLE IF NOT EXISTS ip_access_list (
+    id TEXT PRIMARY KEY,
+    entry TEXT NOT NULL,                  -- IP, CIDR, یا wildcard مثل 192.168.*
+    entry_type TEXT NOT NULL,             -- 'ip' | 'cidr' | 'wildcard'
+    list_type TEXT NOT NULL,              -- 'whitelist' | 'blacklist'
+    reason TEXT,
+    expires_at INTEGER,                   -- NULL = دائمی
+    created_by TEXT,                      -- user_id ادمین
+    created_at INTEGER NOT NULL,
+    hits INTEGER NOT NULL DEFAULT 0,
+    last_hit_at INTEGER,
+    UNIQUE(entry, list_type)
+  );
+  CREATE INDEX IF NOT EXISTS idx_ip_access_type ON ip_access_list(list_type, expires_at);
+  CREATE INDEX IF NOT EXISTS idx_ip_access_entry ON ip_access_list(entry);
+
+  -- ───── Geo Rules ─────
+  CREATE TABLE IF NOT EXISTS geo_rules (
+    id TEXT PRIMARY KEY,
+    rule_type TEXT NOT NULL,              -- 'country' | 'city' | 'asn' | 'region'
+    value TEXT NOT NULL,                  -- 'IR' | 'Tehran' | 'AS12345'
+    action TEXT NOT NULL,                 -- 'allow' | 'block' | 'challenge'
+    reason TEXT,
+    priority INTEGER NOT NULL DEFAULT 100, -- کوچیک‌تر = اولویت بالاتر
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(rule_type, value, action)
+  );
+  CREATE INDEX IF NOT EXISTS idx_geo_rules_active ON geo_rules(enabled, priority);
+
+  -- ───── Geo Access Log ─────
+  CREATE TABLE IF NOT EXISTS geo_access_log (
+    id TEXT PRIMARY KEY,
+    ip_address TEXT NOT NULL,
+    user_id TEXT,
+    country TEXT,
+    region TEXT,
+    city TEXT,
+    asn TEXT,
+    isp TEXT,
+    action TEXT NOT NULL,                 -- 'allowed' | 'blocked' | 'challenged'
+    rule_id TEXT,
+    path TEXT,
+    user_agent TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_geo_log_ip ON geo_access_log(ip_address, created_at);
+  CREATE INDEX IF NOT EXISTS idx_geo_log_country ON geo_access_log(country, created_at);
+
+  -- ───── Geo Block Events (برای مانیتورینگ) ─────
+  CREATE TABLE IF NOT EXISTS geo_block_stats (
+    country TEXT PRIMARY KEY,
+    total_blocks INTEGER NOT NULL DEFAULT 0,
+    last_block_at INTEGER
+  );
+`);
+```
+
+---
+
+🛡️ server/services/ipAccess.service.ts
+
+```typescript
+import crypto from 'crypto';
+import ipaddr from 'ipaddr.js';
+import db from './db.service.js';
+import { IP_ACCESS_CONFIG } from '../config/geo.config.js';
+
+export interface IpAccessRow {
+  id: string;
+  entry: string;
+  entry_type: 'ip' | 'cidr' | 'wildcard';
+  list_type: 'whitelist' | 'blacklist';
+  reason: string | null;
+  expires_at: number | null;
+  created_by: string | null;
+  created_at: number;
+  hits: number;
+  last_hit_at: number | null;
+}
+
+interface CompiledRule {
+  row: IpAccessRow;
+  matcher: (ip: string) => boolean;
+}
+
+export class IpAccessService {
+  private compiledCache: { data: CompiledRule[]; ts: number } | null = null;
+
+  // ═══════════════════════════════════════════
+  //  Compile rules → fast matchers
+  // ═══════════════════════════════════════════
+  private compile(): CompiledRule[] {
+    const now = Date.now();
+    if (this.compiledCache && now - this.compiledCache.ts < IP_ACCESS_CONFIG.cacheTtlMs) {
+      return this.compiledCache.data;
+    }
+
+    const rows = db.prepare(`
+      SELECT * FROM ip_access_list 
+      WHERE expires_at IS NULL OR expires_at > ?
+    `).all(now) as IpAccessRow[];
+
+    const compiled: CompiledRule[] = rows.map(row => ({
+      row,
+      matcher: this.buildMatcher(row.entry, row.entry_type)
+    }));
+
+    this.compiledCache = { data: compiled, ts: now };
+    return compiled;
+  }
+
+  private buildMatcher(entry: string, type: string): (ip: string) => boolean {
+    switch (type) {
+      case 'ip': {
+        const normalized = this.normalizeIp(entry);
+        return ip => this.normalizeIp(ip) === normalized;
+      }
+
+      case 'cidr': {
+        try {
+          const [range, bits] = entry.split('/');
+          const parsed = ipaddr.parse(range);
+          const maskBits = parseInt(bits, 10);
+          return (ip: string) => {
+            try {
+              const addr = ipaddr.parse(this.normalizeIp(ip));
+              return addr.kind() === parsed.kind() && addr.match(parsed, maskBits);
+            } catch {
+              return false;
+            }
+          };
+        } catch {
+          return () => false;
+        }
+      }
+
+      case 'wildcard': {
+        // مثال: 192.168.*.* یا 10.*
+        const regex = new RegExp(
+          '^' + entry.replace(/\./g, '\\.').replace(/\*/g, '\\d+') + '$'
+        );
+        return (ip: string) => regex.test(this.normalizeIp(ip));
+      }
+
+      default:
+        return () => false;
+    }
+  }
+
+  private normalizeIp(ip: string): string {
+    // حذف IPv6-mapped IPv4 (::ffff:127.0.0.1 → 127.0.0.1)
+    if (ip.startsWith('::ffff:')) return ip.slice(7);
+    return ip;
+  }
+
+  // ═══════════════════════════════════════════
+  //  Main Check
+  // ═══════════════════════════════════════════
+  check(rawIp: string): {
+    allowed: boolean;
+    reason?: string;
+    ruleId?: string;
+    listType?: 'whitelist' | 'blacklist' | 'system';
+  } {
+    const ip = this.normalizeIp(rawIp);
+
+    // Localhost?
+    if (IP_ACCESS_CONFIG.allowLocalhost && (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost')) {
+      return { allowed: true, reason: 'localhost', listType: 'system' };
+    }
+
+    // Private IPs?
+    if (IP_ACCESS_CONFIG.allowPrivateIps && this.isPrivate(ip)) {
+      return { allowed: true, reason: 'private_ip', listType: 'system' };
+    }
+
+    const rules = this.compile();
+
+    // 1. اول blacklist رو چک کن (بالاترین اولویت)
+    const blackMatch = rules.find(r => r.row.list_type === 'blacklist' && r.matcher(ip));
+    if (blackMatch) {
+      this.recordHit(blackMatch.row.id);
+      return {
+        allowed: false,
+        reason: blackMatch.row.reason || 'blacklisted',
+        ruleId: blackMatch.row.id,
+        listType: 'blacklist'
+      };
+    }
+
+    // 2. بعد whitelist
+    const whiteMatch = rules.find(r => r.row.list_type === 'whitelist' && r.matcher(ip));
+    if (whiteMatch) {
+      this.recordHit(whiteMatch.row.id);
+      return {
+        allowed: true,
+        reason: whiteMatch.row.reason || 'whitelisted',
+        ruleId: whiteMatch.row.id,
+        listType: 'whitelist'
+      };
+    }
+
+    // 3. اگر mode = deny_all و در whitelist نبود → رد کن
+    if (IP_ACCESS_CONFIG.mode === 'deny_all') {
+      return {
+        allowed: false,
+        reason: 'not_in_whitelist (deny_all mode)',
+        listType: 'system'
+      };
+    }
+
+    return { allowed: true, listType: 'system' };
+  }
+
+  private isPrivate(ip: string): boolean {
+    try {
+      const addr = ipaddr.parse(ip);
+      return addr.range() !== 'unicast';
+    } catch {
+      return false;
+    }
+  }
+
+  private recordHit(ruleId: string) {
+    try {
+      db.prepare(`
+        UPDATE ip_access_list 
+        SET hits = hits + 1, last_hit_at = ? 
+        WHERE id = ?
+      `).run(Date.now(), ruleId);
+    } catch {}
+  }
+
+  // ═══════════════════════════════════════════
+  //  CRUD
+  // ═══════════════════════════════════════════
+  add(params: {
+    entry: string;
+    listType: 'whitelist' | 'blacklist';
+    reason?: string;
+    expiresInMs?: number;
+    createdBy?: string;
+  }) {
+    const entryType = this.detectEntryType(params.entry);
+    const id = crypto.randomUUID();
+    const now = Date.now();
+
+    db.prepare(`
+      INSERT INTO ip_access_list 
+        (id, entry, entry_type, list_type, reason, expires_at, created_by, created_at, hits)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(
+      id,
+      params.entry,
+      entryType,
+      params.listType,
+      params.reason || null,
+      params.expiresInMs ? now + params.expiresInMs : null,
+      params.createdBy || null,
+      now
+    );
+
+    this.invalidateCache();
+    return this.getById(id);
+  }
+
+  private detectEntryType(entry: string): 'ip' | 'cidr' | 'wildcard' {
+    if (entry.includes('*')) return 'wildcard';
+    if (entry.includes('/')) return 'cidr';
+    return 'ip';
+  }
+
+  remove(id: string) {
+    db.prepare('DELETE FROM ip_access_list WHERE id = ?').run(id);
+    this.invalidateCache();
+  }
+
+  removeExpired() {
+    const result = db.prepare(`
+      DELETE FROM ip_access_list WHERE expires_at IS NOT NULL AND expires_at < ?
+    `).run(Date.now());
+    this.invalidateCache();
+    return result.changes;
+  }
+
+  getById(id: string): IpAccessRow | undefined {
+    return db.prepare('SELECT * FROM ip_access_list WHERE id = ?').get(id) as IpAccessRow | undefined;
+  }
+
+  list(listType?: 'whitelist' | 'blacklist'): IpAccessRow[] {
+    if (listType) {
+      return db.prepare(`
+        SELECT * FROM ip_access_list 
+        WHERE list_type = ? 
+        ORDER BY created_at DESC
+      `).all(listType) as IpAccessRow[];
+    }
+    return db.prepare('SELECT * FROM ip_access_list ORDER BY created_at DESC').all() as IpAccessRow[];
+  }
+
+  invalidateCache() {
+    this.compiledCache = null;
+  }
+
+  getStats() {
+    const row = db.prepare(`
+      SELECT 
+        COUNT(*) FILTER (WHERE list_type = 'whitelist') as whitelist_count,
+        COUNT(*) FILTER (WHERE list_type = 'blacklist') as blacklist_count,
+        SUM(hits) as total_hits
+      FROM ip_access_list
+    `).get() as any;
+
+    return {
+      whitelist: row?.whitelist_count || 0,
+      blacklist: row?.blacklist_count || 0,
+      totalHits: row?.total_hits || 0,
+      mode: IP_ACCESS_CONFIG.mode
+    };
+  }
+
+  /**
+   * Bulk import از یک لیست متنی
+   */
+  bulkAdd(entries: string[], listType: 'whitelist' | 'blacklist', reason?: string, createdBy?: string) {
+    const results: any[] = [];
+    const errors: { entry: string; error: string }[] = [];
+
+    for (const entry of entries) {
+      const trimmed = entry.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      try {
+        this.validateEntry(trimmed);
+        results.push(this.add({ entry: trimmed, listType, reason, createdBy }));
+      } catch (err: any) {
+        errors.push({ entry: trimmed, error: err.message });
+      }
+    }
+    return { added: results.length, errors, items: results };
+  }
+
+  private validateEntry(entry: string) {
+    if (entry.includes('*')) {
+      if (!/^[\d.*]+$/.test(entry)) throw new Error('Invalid wildcard format');
+      return;
+    }
+    if (entry.includes('/')) {
+      const [range, bits] = entry.split('/');
+      if (!ipaddr.isValid(range)) throw new Error('Invalid CIDR range');
+      const n = parseInt(bits, 10);
+      if (isNaN(n) || n < 0 || n > 128) throw new Error('Invalid CIDR bits');
+      return;
+    }
+    if (!ipaddr.isValid(entry)) throw new Error('Invalid IP address');
+  }
+}
+
+export const ipAccessService = new IpAccessService();
+```
+
+---
+
+🌍 server/services/geoBlocking.service.ts
+
+```typescript
+import crypto from 'crypto';
+import geoip from 'geoip-lite';
+import db from './db.service.js';
+import { GEO_CONFIG } from '../config/geo.config.js';
+
+export interface GeoRuleRow {
+  id: string;
+  rule_type: 'country' | 'city' | 'asn' | 'region';
+  value: string;
+  action: 'allow' | 'block' | 'challenge';
+  reason: string | null;
+  priority: number;
+  enabled: number;
+  created_by: string | null;
+  created_at: number;
+}
+
+export interface GeoProfile {
+  ip: string;
+  country?: string;
+  region?: string;
+  city?: string;
+  timezone?: string;
+  ll?: [number, number];
+  asn?: string;
+  isp?: string;
+  isPrivate: boolean;
+}
+
+export class GeoBlockingService {
+  private rulesCache: { data: GeoRuleRow[]; ts: number } | null = null;
+
+  // ═══════════════════════════════════════════
+  //  Lookup IP → Geo profile
+  // ═══════════════════════════════════════════
+  lookup(ip: string): GeoProfile {
+    const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+
+    // IP های private/local
+    if (
+      normalized === '127.0.0.1' ||
+      normalized === '::1' ||
+      normalized.startsWith('10.') ||
+      normalized.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(normalized)
+    ) {
+      return { ip: normalized, isPrivate: true, country: 'LOCAL' };
+    }
+
+    try {
+      const geo = geoip.lookup(normalized);
+      if (!geo) return { ip: normalized, isPrivate: false };
+
+      return {
+        ip: normalized,
+        country: geo.country,
+        region: geo.region,
+        city: geo.city,
+        timezone: geo.timezone,
+        ll: geo.ll as [number, number],
+        asn: undefined, // geoip-lite ASN نداره — از maxmind استفاده کن
+        isp: undefined,
+        isPrivate: false
+      };
+    } catch (err) {
+      console.error('[GeoBlocking] lookup error:', err);
+      return { ip: normalized, isPrivate: false };
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  //  Main Check
+  // ═══════════════════════════════════════════
+  check(ip: string): {
+    action: 'allow' | 'block' | 'challenge';
+    reason: string;
+    ruleId?: string;
+    profile: GeoProfile;
+  } {
+    const profile = this.lookup(ip);
+
+    // اگر geo-blocking غیرفعاله
+    if (!GEO_CONFIG.enabled) {
+      return { action: 'allow', reason: 'geo_blocking_disabled', profile };
+    }
+
+    // IP private → اجازه
+    if (profile.isPrivate) {
+      return { action: 'allow', reason: 'private_ip', profile };
+    }
+
+    // کشور نامشخص
+    if (!profile.country) {
+      return {
+        action: GEO_CONFIG.failOpen ? 'allow' : 'block',
+        reason: GEO_CONFIG.failOpen ? 'unknown_country_fail_open' : 'unknown_country_fail_closed',
+        profile
+      };
+    }
+
+    // 1. قوانین سفارشی DB (اولویت‌دار)
+    const rules = this.getRules();
+    for (const rule of rules) {
+      if (this.ruleMatches(rule, profile)) {
+        if (rule.action === 'block') {
+          this.recordBlock(profile.country);
+          this.logAccess(profile, 'blocked', rule.id);
+        } else if (rule.action === 'allow') {
+          this.logAccess(profile, 'allowed', rule.id);
+        }
+        return {
+          action: rule.action,
+          reason: rule.reason || `rule:${rule.rule_type}=${rule.value}`,
+          ruleId: rule.id,
+          profile
+        };
+      }
+    }
+
+    // 2. مود پیش‌فرض
+    if (GEO_CONFIG.mode === 'allow_list') {
+      const allowed = GEO_CONFIG.allowedCountries.includes(profile.country);
+      if (!allowed) {
+        this.recordBlock(profile.country);
+        this.logAccess(profile, 'blocked');
+        return {
+          action: 'block',
+          reason: `country_not_in_allowlist:${profile.country}`,
+          profile
+        };
+      }
+    } else if (GEO_CONFIG.mode === 'block_list') {
+      const blocked = GEO_CONFIG.blockedCountries.includes(profile.country);
+      if (blocked) {
+        this.recordBlock(profile.country);
+        this.logAccess(profile, 'blocked');
+        return {
+          action: 'block',
+          reason: `country_blacklisted:${profile.country}`,
+          profile
+        };
+      }
+    }
+
+    this.logAccess(profile, 'allowed');
+    return { action: 'allow', reason: 'default_allow', profile };
+  }
+
+  private ruleMatches(rule: GeoRuleRow, profile: GeoProfile): boolean {
+    if (rule.enabled !== 1) return false;
+
+    switch (rule.rule_type) {
+      case 'country':
+        return profile.country?.toUpperCase() === rule.value.toUpperCase();
+      case 'city':
+        return profile.city?.toLowerCase() === rule.value.toLowerCase();
+      case 'region':
+        return profile.region?.toLowerCase() === rule.value.toLowerCase();
+      case 'asn':
+        return profile.asn === rule.value;
+      default:
+        return false;
+    }
+  }
+
+  private getRules(): GeoRuleRow[] {
+    const now = Date.now();
+    if (this.rulesCache && now - this.rulesCache.ts < 60_000) {
+      return this.rulesCache.data;
+    }
+
+    const rows = db.prepare(`
+      SELECT * FROM geo_rules WHERE enabled = 1 ORDER BY priority ASC, created_at DESC
+    `).all() as GeoRuleRow[];
+
+    this.rulesCache = { data: rows, ts: now };
+    return rows;
+  }
+
+  // ═══════════════════════════════════════════
+  //  Logging & Stats
+  // ═══════════════════════════════════════════
+  private logAccess(profile: GeoProfile, action: string, ruleId?: string, path?: string, userId?: string, ua?: string) {
+    try {
+      db.prepare(`
+        INSERT INTO geo_access_log 
+          (id, ip_address, user_id, country, region, city, asn, isp, action, rule_id, path, user_agent, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        profile.ip,
+        userId || null,
+        profile.country || null,
+        profile.region || null,
+        profile.city || null,
+        profile.asn || null,
+        profile.isp || null,
+        action,
+        ruleId || null,
+        path || null,
+        ua || null,
+        Date.now()
+      );
+    } catch (err) {
+      console.error('[GeoBlocking] logAccess error:', err);
+    }
+  }
+
+  private recordBlock(country?: string) {
+    if (!country) return;
+    try {
+      db.prepare(`
+        INSERT INTO geo_block_stats (country, total_blocks, last_block_at)
+        VALUES (?, 1, ?)
+        ON CONFLICT(country) DO UPDATE SET
+          total_blocks = geo_block_stats.total_blocks + 1,
+          last_block_at = excluded.last_block_at
+      `).run(country, Date.now());
+    } catch {}
+  }
+
+  getStats() {
+    return {
+      enabled: GEO_CONFIG.enabled,
+      mode: GEO_CONFIG.mode,
+      blockedCountries: GEO_CONFIG.blockedCountries,
+      allowedCountries: GEO_CONFIG.allowedCountries,
+      rulesCount: this.getRules().length,
+      blockStats: db.prepare(`
+        SELECT * FROM geo_block_stats ORDER BY total_blocks DESC LIMIT 20
+      `).all()
+    };
+  }
+
+  getRecentLogs(limit = 100) {
+    return db.prepare(`
+      SELECT * FROM geo_access_log ORDER BY created_at DESC LIMIT ?
+    `).all(limit);
+  }
+
+  // ═══════════════════════════════════════════
+  //  Rule CRUD
+  // ═══════════════════════════════════════════
+  addRule(params: {
+    ruleType: 'country' | 'city' | 'region' | 'asn';
+    value: string;
+    action: 'allow' | 'block' | 'challenge';
+    reason?: string;
+    priority?: number;
+    createdBy?: string;
+  }) {
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO geo_rules 
+        (id, rule_type, value, action, reason, priority, enabled, created_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `).run(
+      id,
+      params.ruleType,
+      params.value.toUpperCase(),
+      params.action,
+      params.reason || null,
+      params.priority ?? 100,
+      params.createdBy || null,
+      Date.now()
+    );
+    this.rulesCache = null;
+    return db.prepare('SELECT * FROM geo_rules WHERE id = ?').get(id);
+  }
+
+  updateRule(id: string, patch: Partial<{ enabled: number; priority: number; reason: string; action: string }>) {
+    const fields: string[] = [];
+    const values: any[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (v !== undefined) {
+        fields.push(`${k} = ?`);
+        values.push(v);
+      }
+    }
+    if (!fields.length) return;
+    values.push(id);
+    db.prepare(`UPDATE geo_rules SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    this.rulesCache = null;
+  }
+
+  removeRule(id: string) {
+    db.prepare('DELETE FROM geo_rules WHERE id = ?').run(id);
+    this.rulesCache = null;
+  }
+
+  listRules(): GeoRuleRow[] {
+    return db.prepare('SELECT * FROM geo_rules ORDER BY priority ASC, created_at DESC').all() as GeoRuleRow[];
+  }
+}
+
+export const geoBlockingService = new GeoBlockingService();
+```
+
+---
+
+🛡️ server/middleware/ipAccess.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { ipAccessService } from '../services/ipAccess.service.js';
+
+export function ipAccessGuard(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const result = ipAccessService.check(ip);
+
+  if (!result.allowed) {
+    console.warn(`[IPAccess] Blocked ${ip}: ${result.reason}`);
+    return res.status(403).json({
+      success: false,
+      error: 'Access denied',
+      code: 'IP_BLOCKED',
+      reason: result.reason
+    });
+  }
+
+  // برای دیباگ
+  (req as any).ipAccess = result;
+  next();
+}
+```
+
+---
+
+🌍 server/middleware/geoBlocking.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { geoBlockingService } from '../services/geoBlocking.service.js';
+import { SECURITY_CONFIG } from '../config/security.config.js';
+import { securityService } from '../services/security.service.js';
+
+export function geoBlockGuard(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const result = geoBlockingService.check(ip);
+
+  // برای دسترسی در روت‌های پایین‌تر
+  (req as any).geo = result.profile;
+  (req as any).geoAction = result.action;
+
+  if (result.action === 'block') {
+    console.warn(`[Geo] Blocked ${ip} (${result.profile.country}): ${result.reason}`);
+    securityService.logSuspicious({
+      ipAddress: ip,
+      userAgent: req.headers['user-agent'],
+      activityType: 'geo_blocked',
+      severity: 'medium',
+      details: {
+        country: result.profile.country,
+        city: result.profile.city,
+        reason: result.reason
+      }
+    });
+
+    return res.status(451).json({  // 451 = Unavailable For Legal Reasons
+      success: false,
+      error: 'Access unavailable from your region',
+      code: 'GEO_BLOCKED',
+      country: result.profile.country
+    });
+  }
+
+  if (result.action === 'challenge') {
+    // اینجا می‌تونی CAPTCHA یا 2FA رو اجبار کنی
+    return res.status(403).json({
+      success: false,
+      error: 'Additional verification required',
+      code: 'GEO_CHALLENGE',
+      country: result.profile.country
+    });
+  }
+
+  next();
+}
+
+/**
+ * نسخه سبک — فقط پروفایل geo رو attach می‌کنه بدون بلاک
+ * (برای لاگ یا personalization)
+ */
+export function attachGeoProfile(req: Request, _res: Response, next: NextFunction) {
+  const ip = req.ip || 'unknown';
+  (req as any).geo = geoBlockingService.lookup(ip);
+  next();
+}
+```
+
+---
+
+🛣️ server/routes/ipAccess.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { ipAccessService } from '../services/ipAccess.service.js';
+
+const router = Router();
+router.use(requireAuth, requireRole('admin'));
+
+// ───── لیست ─────
+router.get('/', (req, res) => {
+  const listType = req.query.type as 'whitelist' | 'blacklist' | undefined;
+  res.json({ success: true, data: ipAccessService.list(listType) });
+});
+
+router.get('/stats', (_req, res) => {
+  res.json({ success: true, data: ipAccessService.getStats() });
+});
+
+// ───── افزودن ─────
+router.post('/', (req, res, next) => {
+  try {
+    const schema = z.object({
+      entry: z.string().min(1),
+      listType: z.enum(['whitelist', 'blacklist']),
+      reason: z.string().max(200).optional(),
+      expiresInMs: z.number().positive().optional()
+    });
+    const body = schema.parse(req.body);
+
+    const item = ipAccessService.add({
+      ...body,
+      createdBy: req.user!.sub
+    });
+    res.status(201).json({ success: true, data: item });
+  } catch (err) { next(err); }
+});
+
+// ───── Bulk import ─────
+router.post('/bulk', (req, res, next) => {
+  try {
+    const schema = z.object({
+      entries: z.array(z.string()).min(1).max(500),
+      listType: z.enum(['whitelist', 'blacklist']),
+      reason: z.string().optional()
+    });
+    const { entries, listType, reason } = schema.parse(req.body);
+    const result = ipAccessService.bulkAdd(entries, listType, reason, req.user!.sub);
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ───── حذف ─────
+router.delete('/:id', (req, res) => {
+  ipAccessService.remove(req.params.id);
+  res.json({ success: true });
+});
+
+// ───── پاکسازی منقضی‌ها ─────
+router.post('/cleanup', (_req, res) => {
+  const removed = ipAccessService.removeExpired();
+  res.json({ success: true, data: { removed } });
+});
+
+export default router;
+```
+
+---
+
+🛣️ server/routes/geo.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { geoBlockingService } from '../services/geoBlocking.service.js';
+
+const router = Router();
+
+// ───── عمومی: lookup یک IP (بدون auth، برای پیش‌نمایش) ─────
+router.get('/lookup/:ip', (req, res) => {
+  const result = geoBlockingService.check(req.params.ip);
+  res.json({ success: true, data: result });
+});
+
+// ───── ادمین ─────
+router.use(requireAuth, requireRole('admin'));
+
+router.get('/stats', (_req, res) => {
+  res.json({ success: true, data: geoBlockingService.getStats() });
+});
+
+router.get('/logs', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  res.json({ success: true, data: geoBlockingService.getRecentLogs(limit) });
+});
+
+router.get('/rules', (_req, res) => {
+  res.json({ success: true, data: geoBlockingService.listRules() });
+});
+
+router.post('/rules', (req, res, next) => {
+  try {
+    const schema = z.object({
+      ruleType: z.enum(['country', 'city', 'region', 'asn']),
+      value: z.string().min(1),
+      action: z.enum(['allow', 'block', 'challenge']),
+      reason: z.string().optional(),
+      priority: z.number().int().min(1).max(999).optional()
+    });
+    const body = schema.parse(req.body);
+    const rule = geoBlockingService.addRule({ ...body, createdBy: req.user!.sub });
+    res.status(201).json({ success: true, data: rule });
+  } catch (err) { next(err); }
+});
+
+router.patch('/rules/:id', (req, res, next) => {
+  try {
+    const schema = z.object({
+      enabled: z.number().int().min(0).max(1).optional(),
+      priority: z.number().int().min(1).max(999).optional(),
+      reason: z.string().optional(),
+      action: z.enum(['allow', 'block', 'challenge']).optional()
+    });
+    const patch = schema.parse(req.body);
+    geoBlockingService.updateRule(req.params.id, patch);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+router.delete('/rules/:id', (req, res) => {
+  geoBlockingService.removeRule(req.params.id);
+  res.json({ success: true });
+});
+
+export default router;
+```
+
+---
+
+🖥️ به‌روزرسانی server/index.ts
+
+```typescript
+import ipAccessRoutes from './routes/ipAccess.routes.js';
+import geoRoutes from './routes/geo.routes.js';
+import { ipAccessGuard } from './middleware/ipAccess.middleware.js';
+import { geoBlockGuard, attachGeoProfile } from './middleware/geoBlocking.middleware.js';
+
+// ...
+
+app.set('trust proxy', 1);
+configurePassport();
+
+app.use(securityHeaders);
+app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173', credentials: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(cookieParser());
+
+// ───── 1. IP Access Control (اول از همه) ─────
+app.use('/api', ipAccessGuard);
+
+// ───── 2. Geo Blocking ─────
+app.use('/api', geoBlockGuard);
+
+// ───── 3. Global rate limit ─────
+app.use('/api', globalLimiter);
+
+// ───── 4. IP ban (brute-force) ─────
+app.use('/api', checkIpBan);
+
+// ───── 5. Geo profile attach (برای لاگ) ─────
+app.use('/api', attachGeoProfile);
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', service: 'APZ Wallet API', time: Date.now() });
+});
+
+// ───── Public routes ─────
+app.use('/api/auth', authSlowDown);
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', registerLimiter);
+app.use('/api/auth', authRoutes);
+
+app.use('/api/auth/oauth', oauthLimiter, oauthRoutes);
+app.use('/api/2fa', twoFactorLimiter, twofaRoutes);
+
+// ───── Admin routes ─────
+app.use('/api/security', securityRoutes);
+app.use('/api/admin/ip-access', ipAccessRoutes);   // ← جدید
+app.use('/api/geo', geoRoutes);                    // ← جدید
+
+// ───── Protected ─────
+app.use('/api/wallet', requireAuth, walletRoutes);
+app.use('/api/tx', requireAuth, txRoutes);
+
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`🚀 APZ Wallet API on http://localhost:${PORT}`);
+  console.log(`🛡️  Brute-force protection: ACTIVE`);
+  console.log(`📋 IP Access mode: ${process.env.IP_ACCESS_MODE || 'allow_all'}`);
+  console.log(`🌍 Geo blocking: ${process.env.GEO_BLOCKING_ENABLED === 'true' ? 'ON' : 'OFF'} (${process.env.GEO_MODE || 'block_list'})`);
+});
+```
+
+---
+
+🎨 کامپوننت src/components/GeoBlockedPage.tsx
+
+```tsx
+import React from 'react';
+
+interface Props {
+  country?: string;
+  reason?: string;
+}
+
+export const GeoBlockedPage: React.FC<Props> = ({ country, reason }) => {
+  return (
+    <div className="geo-blocked-page">
+      <div className="geo-blocked-card">
+        <div className="geo-icon">🌍</div>
+        <h1>دسترسی از منطقه شما ممکن نیست</h1>
+        <p>
+          سرویس APZ Wallet در کشور شما در دسترس نیست.
+          {country && <><br /><small>کشور شناسایی‌شده: <code>{country}</code></small></>}
+        </p>
+        {reason && <p className="geo-reason">دلیل: {reason}</p>}
+        <p className="geo-help">
+          اگر فکر می‌کنی این خطاست، با پشتیبانی تماس بگیر:
+          <br />
+          <a href="mailto:support@apz.io">support@apz.io</a>
+        </p>
+      </div>
+    </div>
+  );
+};
+```
+
+و در main.tsx:
+
+```tsx
+// چک GEO_BLOCKED از query
+const params = new URLSearchParams(window.location.search);
+if (params.get('error') === 'GEO_BLOCKED') {
+  root = <GeoBlockedPage country={params.get('country') || undefined} />;
+}
+```
+
+و در api/client.ts این رو اضافه کن که خودکار redirect کنه:
+
+```typescript
+// در بالای request function:
+if (res.status === 451) {
+  const data = await res.json();
+  const country = data.country || '';
+  window.location.href = `/?error=GEO_BLOCKED&country=${country}`;
+  throw new Error('GEO_BLOCKED');
+}
+```
+
+---
+
+🎨 کامپوننت src/components/admin/IpAccessPanel.tsx
+
+```tsx
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../../api/client';
+
+interface IpAccessItem {
+  id: string;
+  entry: string;
+  entry_type: string;
+  list_type: 'whitelist' | 'blacklist';
+  reason?: string;
+  expires_at?: number;
+  hits: number;
+  created_at: number;
+}
+
+export const IpAccessPanel: React.FC = () => {
+  const [items, setItems] = useState<IpAccessItem[]>([]);
+  const [stats, setStats] = useState<any>(null);
+  const [filter, setFilter] = useState<'all' | 'whitelist' | 'blacklist'>('all');
+  const [entry, setEntry] = useState('');
+  const [listType, setListType] = useState<'whitelist' | 'blacklist'>('blacklist');
+  const [reason, setReason] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [list, statsRes] = await Promise.all([
+        apiClient.ipAccessList(filter === 'all' ? undefined : filter),
+        apiClient.ipAccessStats()
+      ]);
+      setItems(list);
+      setStats(statsRes);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [filter]);
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!entry.trim()) return;
+    try {
+      await apiClient.ipAccessAdd({ entry: entry.trim(), listType, reason });
+      setEntry('');
+      setReason('');
+      load();
+    } catch (err: any) {
+      alert('خطا: ' + err.message);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('حذف این رکورد؟')) return;
+    await apiClient.ipAccessRemove(id);
+    load();
+  };
+
+  return (
+    <div className="admin-panel">
+      <h2>🚦 کنترل دسترسی IP</h2>
+
+      {stats && (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <span>حالت</span>
+            <strong>{stats.mode}</strong>
+          </div>
+          <div className="stat-card green">
+            <span>Whitelist</span>
+            <strong>{stats.whitelist}</strong>
+          </div>
+          <div className="stat-card red">
+            <span>Blacklist</span>
+            <strong>{stats.blacklist}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Total Hits</span>
+            <strong>{stats.totalHits}</strong>
+          </div>
+        </div>
+      )}
+
+      <form className="admin-form" onSubmit={handleAdd}>
+        <input
+          value={entry}
+          onChange={e => setEntry(e.target.value)}
+          placeholder="IP / CIDR / Wildcard (192.168.1.0/24 یا 10.*.*.*)"
+          dir="ltr"
+        />
+        <select value={listType} onChange={e => setListType(e.target.value as any)}>
+          <option value="blacklist">🚫 Blacklist</option>
+          <option value="whitelist">✅ Whitelist</option>
+        </select>
+        <input
+          value={reason}
+          onChange={e => setReason(e.target.value)}
+          placeholder="دلیل (اختیاری)"
+        />
+        <button className="btn-primary" type="submit">افزودن</button>
+      </form>
+
+      <div className="filter-tabs">
+        {(['all', 'whitelist', 'blacklist'] as const).map(f => (
+          <button
+            key={f}
+            className={filter === f ? 'active' : ''}
+            onClick={() => setFilter(f)}
+          >
+            {f === 'all' ? 'همه' : f === 'whitelist' ? 'سفید' : 'سیاه'}
+          </button>
+        ))}
+      </div>
+
+      <table className="admin-table">
+        <thead>
+          <tr>
+            <th>Entry</th>
+            <th>نوع</th>
+            <th>لیست</th>
+            <th>دلیل</th>
+            <th>Hits</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map(item => (
+            <tr key={item.id}>
+              <td><code dir="ltr">{item.entry}</code></td>
+              <td>{item.entry_type}</td>
+              <td>
+                <span className={`badge ${item.list_type}`}>
+                  {item.list_type === 'whitelist' ? '✅ سفید' : '🚫 سیاه'}
+                </span>
+              </td>
+              <td>{item.reason || '—'}</td>
+              <td>{item.hits}</td>
+              <td>
+                <button className="btn-icon-danger" onClick={() => handleDelete(item.id)}>🗑</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {loading && <p>در حال بارگذاری…</p>}
+    </div>
+  );
+};
+```
+
+---
+
+🎨 کامپوننت src/components/admin/GeoBlockingPanel.tsx
+
+```tsx
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../../api/client';
+
+export const GeoBlockingPanel: React.FC = () => {
+  const [rules, setRules] = useState<any[]>([]);
+  const [stats, setStats] = useState<any>(null);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [lookupIp, setLookupIp] = useState('');
+  const [lookupResult, setLookupResult] = useState<any>(null);
+
+  // فرم
+  const [ruleType, setRuleType] = useState<'country' | 'city' | 'region' | 'asn'>('country');
+  const [value, setValue] = useState('');
+  const [action, setAction] = useState<'allow' | 'block' | 'challenge'>('block');
+  const [reason, setReason] = useState('');
+  const [priority, setPriority] = useState(100);
+
+  const load = async () => {
+    const [r, s, l] = await Promise.all([
+      apiClient.geoRules(),
+      apiClient.geoStats(),
+      apiClient.geoLogs(50)
+    ]);
+    setRules(r);
+    setStats(s);
+    setLogs(l);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await apiClient.geoAddRule({ ruleType, value: value.toUpperCase(), action, reason, priority });
+      setValue(''); setReason('');
+      load();
+    } catch (err: any) { alert(err.message); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('حذف قانون؟')) return;
+    await apiClient.geoRemoveRule(id);
+    load();
+  };
+
+  const handleLookup = async () => {
+    if (!lookupIp.trim()) return;
+    const res = await apiClient.geoLookup(lookupIp.trim());
+    setLookupResult(res);
+  };
+
+  return (
+    <div className="admin-panel">
+      <h2>🌍 کنترل جغرافیایی</h2>
+
+      {stats && (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <span>وضعیت</span>
+            <strong>{stats.enabled ? '✅ فعال' : '⛔ غیرفعال'}</strong>
+          </div>
+          <div className="stat-card">
+            <span>حالت</span>
+            <strong>{stats.mode}</strong>
+          </div>
+          <div className="stat-card">
+            <span>تعداد قوانین</span>
+            <strong>{stats.rulesCount}</strong>
+          </div>
+        </div>
+      )}
+
+      {/* ───── جستجوی IP ───── */}
+      <div className="lookup-box">
+        <input
+          value={lookupIp}
+          onChange={e => setLookupIp(e.target.value)}
+          placeholder="مثلاً 8.8.8.8"
+          dir="ltr"
+        />
+        <button onClick={handleLookup}>🔍 بررسی</button>
+        {lookupResult && (
+          <div className="lookup-result">
+            <div><b>IP:</b> {lookupResult.profile.ip}</div>
+            <div><b>کشور:</b> {lookupResult.profile.country || '—'}</div>
+            <div><b>شهر:</b> {lookupResult.profile.city || '—'}</div>
+            <div><b>Action:</b> <span className={`badge ${lookupResult.action}`}>{lookupResult.action}</span></div>
+            <div><b>دلیل:</b> {lookupResult.reason}</div>
+          </div>
+        )}
+      </div>
+
+      {/* ───── فرم افزودن قانون ───── */}
+      <form className="admin-form geo-form" onSubmit={handleAdd}>
+        <select value={ruleType} onChange={e => setRuleType(e.target.value as any)}>
+          <option value="country">کشور</option>
+          <option value="city">شهر</option>
+          <option value="region">منطقه</option>
+          <option value="asn">ASN</option>
+        </select>
+        <input
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          placeholder={ruleType === 'country' ? 'IR' : 'value'}
+          dir="ltr"
+        />
+        <select value={action} onChange={e => setAction(e.target.value as any)}>
+          <option value="block">🚫 بلاک</option>
+          <option value="allow">✅ اجازه</option>
+          <option value="challenge">🔐 چالش</option>
+        </select>
+        <input
+          type="number"
+          value={priority}
+          onChange={e => setPriority(Number(e.target.value))}
+          placeholder="اولویت"
+          min={1}
+          max={999}
+        />
+        <input
+          value={reason}
+          onChange={e => setReason(e.target.value)}
+          placeholder="دلیل"
+        />
+        <button className="btn-primary" type="submit">افزودن قانون</button>
+      </form>
+
+      {/* ───── لیست قوانین ───── */}
+      <h3>قوانین فعال</h3>
+      <table className="admin-table">
+        <thead>
+          <tr>
+            <th>نوع</th>
+            <th>مقدار</th>
+            <th>اکشن</th>
+            <th>اولویت</th>
+            <th>دلیل</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rules.map(r => (
+            <tr key={r.id}>
+              <td>{r.rule_type}</td>
+              <td><code dir="ltr">{r.value}</code></td>
+              <td><span className={`badge ${r.action}`}>{r.action}</span></td>
+              <td>{r.priority}</td>
+              <td>{r.reason || '—'}</td>
+              <td>
+                <button className="btn-icon-danger" onClick={() => handleDelete(r.id)}>🗑</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* ───── لاگ‌های اخیر ───── */}
+      <h3>آخرین دسترسی‌ها</h3>
+      <table className="admin-table compact">
+        <thead>
+          <tr>
+            <th>IP</th>
+            <th>کشور</th>
+            <th>شهر</th>
+            <th>اکشن</th>
+            <th>زمان</th>
+          </tr>
+        </thead>
+        <tbody>
+          {logs.slice(0, 20).map(l => (
+            <tr key={l.id}>
+              <td><code dir="ltr">{l.ip_address}</code></td>
+              <td>{l.country || '—'}</td>
+              <td>{l.city || '—'}</td>
+              <td><span className={`badge ${l.action}`}>{l.action}</span></td>
+              <td>{new Date(l.created_at).toLocaleString('fa-IR')}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+```
+
+---
+
+🌐 متدهای اضافی در src/api/client.ts
+
+```typescript
+// ───── IP Access ─────
+ipAccessList: (type?: 'whitelist' | 'blacklist') =>
+  request<any[]>(`/admin/ip-access${type ? `?type=${type}` : ''}`),
+
+ipAccessStats: () =>
+  request<any>('/admin/ip-access/stats'),
+
+ipAccessAdd: (payload: { entry: string; listType: 'whitelist' | 'blacklist'; reason?: string; expiresInMs?: number }) =>
+  request<any>('/admin/ip-access', { method: 'POST', body: JSON.stringify(payload) }),
+
+ipAccessBulk: (entries: string[], listType: 'whitelist' | 'blacklist', reason?: string) =>
+  request<any>('/admin/ip-access/bulk', {
+    method: 'POST',
+    body: JSON.stringify({ entries, listType, reason })
+  }),
+
+ipAccessRemove: (id: string) =>
+  request<{}>(`/admin/ip-access/${id}`, { method: 'DELETE' }),
+
+// ───── Geo ─────
+geoLookup: (ip: string) =>
+  request<any>(`/geo/lookup/${ip}`),
+
+geoStats: () =>
+  request<any>('/geo/stats'),
+
+geoLogs: (limit = 100) =>
+  request<any[]>(`/geo/logs?limit=${limit}`),
+
+geoRules: () =>
+  request<any[]>('/geo/rules'),
+
+geoAddRule: (payload: { ruleType: string; value: string; action: string; reason?: string; priority?: number }) =>
+  request<any>('/geo/rules', { method: 'POST', body: JSON.stringify(payload) }),
+
+geoUpdateRule: (id: string, patch: any) =>
+  request<{}>(`/geo/rules/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+
+geoRemoveRule: (id: string) =>
+  request<{}>(`/geo/rules/${id}`, { method: 'DELETE' })
+```
+
+---
+
+🎨 استایل‌های اضافی
+
+```css
+/* ───── Geo Blocked Page ───── */
+.geo-blocked-page {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  background: #0a0b0f;
+  padding: 20px;
+}
+.geo-blocked-card {
+  max-width: 520px;
+  text-align: center;
+  padding: 40px;
+  background: #14161c;
+  border: 1px solid #232733;
+  border-radius: 20px;
+  direction: rtl;
+}
+.geo-icon { font-size: 4rem; margin-bottom: 20px; }
+.geo-blocked-card h1 { color: #e7e9ee; margin-bottom: 16px; font-size: 1.4rem; }
+.geo-blocked-card p { color: #a4acbd; line-height: 1.8; }
+.geo-blocked-card code {
+  background: #0d0f14;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: #6c7cff;
+}
+.geo-reason { font-size: 0.9rem; color: #f59e0b; }
+.geo-help { margin-top: 24px; font-size: 0.9rem; }
+.geo-help a { color: #6c7cff; text-decoration: none; }
+
+/* ───── Admin Panels ───── */
+.admin-panel {
+  max-width: 1100px;
+  margin: 20px auto;
+  padding: 24px;
+  background: #14161c;
+  border-radius: 16px;
+  border: 1px solid #232733;
+  color: #e7e9ee;
+  direction: rtl;
+}
+.admin-panel h2 { margin-bottom: 20px; }
+.admin-panel h3 { margin: 24px 0 12px; color: #a4acbd; font-size: 1rem; }
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  background: #0d0f14;
+  border: 1px solid #2a2f3d;
+  border-radius: 10px;
+}
+.stat-card span { font-size: 0.8rem; color: #8a91a3; }
+.stat-card strong { font-size: 1.4rem; color: #6c7cff; }
+.stat-card.green strong { color: #10b981; }
+.stat-card.red strong { color: #ef4444; }
+
+.admin-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding: 16px;
+  background: #0d0f14;
+  border-radius: 10px;
+}
+.admin-form input,
+.admin-form select {
+  flex: 1;
+  min-width: 140px;
+  padding: 10px 12px;
+  background: #14161c;
+  border: 1px solid #2a2f3d;
+  border-radius: 8px;
+  color: #fff;
+  outline: none;
+}
+.admin-form input:focus,
+.admin-form select:focus { border-color: #6c7cff; }
+.geo-form select { flex: 0 0 110px; }
+
+.filter-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.filter-tabs button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid #2a2f3d;
+  background: #0d0f14;
+  color: #a4acbd;
+  cursor: pointer;
+}
+.filter-tabs button.active {
+  background: #6c7cff;
+  color: #fff;
+  border-color: #6c7cff;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #0d0f14;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.admin-table.compact td { padding: 6px 10px; font-size: 0.85rem; }
+.admin-table th, .admin-table td {
+  padding: 10px 12px;
+  text-align: right;
+  border-bottom: 1px solid #1a1d26;
+  font-size: 0.9rem;
+}
+.admin-table th {
+  background: #14161c;
+  color: #8a91a3;
+  font-weight: 500;
+  font-size: 0.8rem;
+}
+.admin-table code {
+  background: #14161c;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #6c7cff;
+  font-size: 0.85rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.badge.whitelist, .badge.allow, .badge.allowed {
+  background: #064e3b; color: #34d399;
+}
+.badge.blacklist, .badge.block, .badge.blocked {
+  background: #7f1d1d; color: #fca5a5;
+}
+.badge.challenge, .badge.challenged {
+  background: #78350f; color: #fbbf24;
+}
+
+.btn-icon-danger {
+  background: none;
+  border: none;
+  color: #ef4444;
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.btn-icon-danger:hover { background: #3a1a1a; }
+
+.lookup-box {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding: 16px;
+  background: #0d0f14;
+  border-radius: 10px;
+  flex-wrap: wrap;
+}
+.lookup-box input {
+  flex: 1;
+  padding: 10px 12px;
+  background: #14161c;
+  border: 1px solid #2a2f3d;
+  border-radius: 8px;
+  color: #fff;
+}
+.lookup-box button {
+  padding: 10px 16px;
+  background: #6c7cff;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.lookup-result {
+  flex-basis: 100%;
+  padding: 14px;
+  background: #14161c;
+  border-radius: 8px;
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  font-size: 0.9rem;
+}
+```
+
+---
+
+🧪 تست سریع
+
+```bash
+# ───── IP Whitelist/Blacklist (ادمین) ─────
+
+# افزودن به blacklist
+curl -X POST http://localhost:3001/api/admin/ip-access \
+  -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"entry":"1.2.3.4","listType":"blacklist","reason":"abuse"}'
+
+# افزودن CIDR
+curl -X POST http://localhost:3001/api/admin/ip-access \
+  -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"entry":"192.168.0.0/16","listType":"whitelist","reason":"office"}'
+
+# Bulk import
+curl -X POST http://localhost:3001/api/admin/ip-access/bulk \
+  -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"entries":["5.6.7.8","10.0.0.0/8","203.0.113.*"],"listType":"blacklist","reason":"spam"}'
+
+# ───── Geo ─────
+
+# بررسی یک IP
+curl http://localhost:3001/api/geo/lookup/8.8.8.8
+
+# افزودن قانون بلاک کشور
+curl -X POST http://localhost:3001/api/geo/rules \
+  -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"ruleType":"country","value":"KP","action":"block","reason":"sanctions"}'
+
+# آمار
+curl http://localhost:3001/api/geo/stats \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+
+---
+
+🔄 (اختیاری) ارتقا به MaxMind
+
+اگه دقت بالاتری خواستی (خصوصاً برای ASN)، geoBlocking.service.ts رو این‌طور تغییر بده:
+
+```typescript
+import maxmind, { Reader, CityResponse } from 'maxmind';
+
+let maxmindReader: Reader<CityResponse> | null = null;
+
+export async function initMaxMind() {
+  if (!GEO_CONFIG.maxmindDbPath) return;
+  try {
+    maxmindReader = await maxmind.open<CityResponse>(GEO_CONFIG.maxmindDbPath);
+    console.log('✅ MaxMind DB loaded');
+  } catch (err) {
+    console.error('❌ MaxMind load failed:', err);
+  }
+}
+
+// در lookup:
+lookup(ip: string): GeoProfile {
+  const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+
+  if (maxmindReader) {
+    const geo = maxmindReader.get(normalized);
+    return {
+      ip: normalized,
+      country: geo?.country?.iso_code,
+      region: geo?.subdivisions?.[0]?.iso_code,
+      city: geo?.city?.names?.en,
+      timezone: geo?.location?.time_zone,
+      ll: geo?.location ? [geo.location.latitude!, geo.location.longitude!] : undefined,
+      asn: geo?.traits?.autonomous_system_number?.toString(),
+      isp: geo?.traits?.autonomous_system_organization,
+      isPrivate: false
+    };
+  }
+
+  // fallback به geoip-lite
+  // ...
+}
+```
+
+برای دانلود DB:
+
+```bash
+# فایل GeoLite2-City.mmdb رو از maxmind.com بگیر (رایگانه)
+mkdir -p server/data/geoip
+wget -O server/data/geoip/GeoLite2-City.mmdb "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"
+```
+
+و در server/index.ts قبل از listen:
+
+```typescript
+import { initMaxMind } from './services/geoBlocking.service.js';
+await initMaxMind();
+```
+
+---
+
+✅ خلاصه ویژگی‌های اضافه‌شده
+
+ویژگی توضیح
+📋 IP Whitelist/Blacklist پشتیبانی از IP، CIDR، Wildcard
+⚡ Cache با TTL کامپایل یک‌بار، استفاده هزاران بار
+⏱️ انقضای زمانی رکوردها می‌تونن موقتی باشن
+📦 Bulk Import افزودن صدها رکورد با یک درخواست
+🌍 GeoIP Lookup با geoip-lite (آفلاین) یا maxmind
+🎯 Geo Rules country / city / region / ASN
+🎚️ Priority اولویت‌بندی قوانین (کوچیک‌تر = بالاتر)
+🔀 سه حالت allow_all / block_list / allow_list
+🔐 Action=challenge اجبار CAPTCHA/2FA برای مناطق مشکوک
+📊 Stats + Logs شمارش بلاک‌ها به ازای کشور + لاگ کامل
+🛡️ Fail-Open/Closed کنترل رفتار وقتی IP نامشخصه
+🚫 HTTP 451 پاسخ صحیح برای geo-block (legal)
+🎨 Admin UI پنل کامل مدیریت با جدول و فرم
+🔗 اتصال به Brute-force لاگ suspicious + ban خودکار
+
+ترتیب لایه‌های امنیتی نهایی در index.ts:
+
+```
+1. IP Access Guard       → blacklist/whitelist
+2. Geo Block Guard       → کشور ممنوع؟
+3. Global Rate Limit     → 300/min
+4. Brute-force IP Ban    → از failed attempts
+5. Helmet Headers        → CSP, HSTS
+6. ... auth routes
+```
