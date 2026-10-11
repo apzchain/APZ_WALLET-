@@ -1,0 +1,37 @@
+```typescript
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';   // ← جدید
+import dotenv from 'dotenv';
+import authRoutes from './routes/auth.routes.js';
+import walletRoutes from './routes/wallet.routes.js';
+import txRoutes from './routes/transaction.routes.js';
+import { errorHandler } from './middleware/errorHandler.js';
+import { requireAuth } from './middleware/auth.middleware.js';  // ← جدید
+
+dotenv.config();
+
+const app = express();
+
+app.use(cors({ origin: 'http://localhost:5173', credentials: true })); // ← credentials:true
+app.use(express.json());
+app.use(cookieParser());  // ← جدید
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', service: 'APZ Wallet API', time: Date.now() });
+});
+
+// عمومی
+app.use('/api/auth', authRoutes);
+
+// محافظت‌شده
+app.use('/api/wallet', requireAuth, walletRoutes);
+app.use('/api/tx', requireAuth, txRoutes);
+
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`🚀 APZ Wallet API running on http://localhost:${PORT}`);
+});
+```
