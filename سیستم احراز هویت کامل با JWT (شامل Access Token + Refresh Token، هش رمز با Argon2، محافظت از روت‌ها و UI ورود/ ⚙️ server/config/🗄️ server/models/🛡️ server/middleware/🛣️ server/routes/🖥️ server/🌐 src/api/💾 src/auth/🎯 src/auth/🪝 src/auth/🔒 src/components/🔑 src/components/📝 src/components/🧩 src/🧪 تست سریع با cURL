@@ -1,0 +1,22 @@
+```bash
+# ثبت‌نام
+curl -X POST http://localhost:3001/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"ali@apz.io","password":"supersecret123","displayName":"Ali"}'
+
+# ورود
+curl -X POST http://localhost:3001/api/auth/login \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{"email":"ali@apz.io","password":"supersecret123"}'
+
+# فراخوانی روت محافظت‌شده (با توکن برگشتی)
+curl http://localhost:3001/api/wallet/list \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+
+# Refresh
+curl -X POST http://localhost:3001/api/auth/refresh -b cookies.txt
+
+# خروج
+curl -X POST http://localhost:3001/api/auth/logout -b cookies.txt
+```
