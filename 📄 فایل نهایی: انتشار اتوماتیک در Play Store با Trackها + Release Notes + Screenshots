@@ -1,0 +1,99 @@
+
+---
+
+📄 فایل نهایی: انتشار اتوماتیک در Play Store با Trackها + Release Notes + Screenshots
+
+این فایل را در مسیر زیر قرار بده:
+
+ .github/workflows/playstore-advanced-deploy.yml 
+
+yaml
+name: Deploy APZ Wallet to Play Store (Advanced)
+
+on:
+  push:
+    tags:
+      - 'v..*'
+
+jobs:
+  deploy-playstore:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.ANDROIDKEYSTOREBASE64 }}" | base64 --decode > apz-release.keystore
+
+      - name: Install Fastlane
+        run: |
+          sudo apt update
+          sudo apt install -y ruby ruby-dev
+          sudo gem install fastlane -NV
+
+      - name: Build Signed AAB
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew bundleRelease \
+            -Pandroid.injected.signing.store.file=../apz-release.keystore \
+            -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} \
+            -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} \
+            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
+
+      - name: Prepare Fastlane
+        run: |
+          mkdir -p android/fastlane/metadata/android/en-US
+          echo "${{ secrets.PLAYSTOREJSONKEY }}" | base64 --decode > android/fastlane/playstore.json
+          # Release Notes اتوماتیک (مثلاً از آخرین Commitها)
+          git log -5 --pretty=format:"- %s" > android/fastlane/metadata/android/en-US/changelogs.txt
+
+      - name: Copy Screenshots
+        run: |
+          # فرض: اسکرین‌شات‌ها در مسیر android/fastlane/metadata/android/en-US/images/phoneScreenshots
+          mkdir -p android/fastlane/metadata/android/en-US/images/phoneScreenshots
+          cp -r android/screenshots/* android/fastlane/metadata/android/en-US/images/phoneScreenshots/ || true
+
+      - name: Deploy to Play Store (Production + Beta + Internal)
+        run: |
+          cd android
+          fastlane supply \
+            --aab app/build/outputs/bundle/release/app-release.aab \
+            --json_key fastlane/playstore.json \
+            --package_name org.apz.wallet \
+            --track production \
+            --track beta \
+            --track internal \
+            --release_status completed \
+            --metadata_path fastlane/metadata
+
+
+---
+
+🔐 Secrets لازم
+
+در GitHub → Settings → Secrets → Actions:
+
+- ANDROIDKEYSTOREBASE64
+- KEYSTORE_PASSWORD
+- KEY_ALIAS
+- KEY_PASSWORD
+- PLAYSTOREJSONKEY
+
+---
+
+📌 نکات مهم:
+
+- Trackها: در دستور fastlane supply همزمان production, beta, internal ست شده‌اند.  
+- Release Notes اتوماتیک: از آخرین ۵ Commit متن ساده می‌سازد و در changelogs.txt قرار می‌دهد.  
+- Screenshots: فرض شده اسکرین‌شات‌ها در android/screenshots/ هستند و به مسیر استاندارد Fastlane کپی می‌شوند.
+
+---
