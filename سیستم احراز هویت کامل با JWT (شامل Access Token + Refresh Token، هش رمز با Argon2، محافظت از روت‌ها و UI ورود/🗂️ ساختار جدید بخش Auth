@@ -1,0 +1,24 @@
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── auth.config.ts          ← جدید
+│   ├── models/
+│   │   └── User.model.ts           ← جدید
+│   ├── services/
+│   │   └── auth.service.ts         ← جدید
+│   ├── middleware/
+│   │   ├── auth.middleware.ts      ← جدید
+│   │   └── errorHandler.ts
+│   └── routes/
+│       └── auth.routes.ts          ← جدید
+└── src/
+    ├── auth/
+    │   ├── AuthContext.tsx         ← جدید
+    │   ├── useAuth.ts              ← جدید
+    │   └── tokenStorage.ts         ← جدید
+    ├── components/
+    │   ├── LoginForm.tsx           ← جدید
+    │   ├── RegisterForm.tsx        ← جدید
+    │   └── ProtectedRoute.tsx      ← جدید
+    └── api/
+        └── client.ts               ← به‌روزرسانیشش
