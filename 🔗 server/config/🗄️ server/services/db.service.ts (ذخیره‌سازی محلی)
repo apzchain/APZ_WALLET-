@@ -1,0 +1,115 @@
+
+```typescript
+import Database from 'better-sqlite3';
+import path from 'path';
+import fs from 'fs';
+
+const dbDir = path.dirname(process.env.DB_PATH || './data/apz-wallet.db');
+if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+
+const db = new Database(process.env.DB_PATH || './data/apz-wallet.db');
+db.pragma('journal_mode = WAL');
+
+// Init tables
+db.exec(`
+  CREATE TABLE IF NOT EXISTS wallets (
+    id TEXT PRIMARY KEY,
+    address TEXT UNIQUE NOT NULL,
+    encrypted_private_key TEXT,
+    label TEXT,
+    created_at INTEGER NOT NULL,
+    last_synced_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS transactions (
+    id TEXT PRIMARY KEY,
+    wallet_id TEXT NOT NULL,
+    tx_hash TEXT UNIQUE,
+    from_address TEXT NOT NULL,
+    to_address TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    status TEXT NOT NULL,
+    block_number INTEGER,
+    gas_used TEXT,
+    timestamp INTEGER NOT NULL,
+    FOREIGN KEY (wallet_id) REFERENCES wallets(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_tx_wallet ON transactions(wallet_id);
+  CREATE INDEX IF NOT EXISTS idx_tx_hash ON transactions(tx_hash);
+`);
+
+export interface WalletRow {
+  id: string;
+  address: string;
+  encrypted_private_key: string | null;
+  label: string | null;
+  created_at: number;
+  last_synced_at: number | null;
+}
+
+export interface TransactionRow {
+  id: string;
+  wallet_id: string;
+  tx_hash: string | null;
+  from_address: string;
+  to_address: string;
+  amount: string;
+  status: string;
+  block_number: number | null;
+  gas_used: string | null;
+  timestamp: number;
+}
+
+export const dbService = {
+  // Wallets
+  createWallet(row: WalletRow) {
+    const stmt = db.prepare(`
+      INSERT INTO wallets (id, address, encrypted_private_key, label, created_at)
+      VALUES (@id, @address, @encrypted_private_key, @label, @created_at)
+    `);
+    return stmt.run(row);
+  },
+
+  getWalletByAddress(address: string): WalletRow | undefined {
+    return db.prepare('SELECT * FROM wallets WHERE address = ?')
+      .get(address) as WalletRow | undefined;
+  },
+
+  getAllWallets(): WalletRow[] {
+    return db.prepare('SELECT * FROM wallets ORDER BY created_at DESC').all() as WalletRow[];
+  },
+
+  updateSyncTime(address: string, ts: number) {
+    db.prepare('UPDATE wallets SET last_synced_at = ? WHERE address = ?').run(ts, address);
+  },
+
+  // Transactions
+  upsertTransaction(row: TransactionRow) {
+    const stmt = db.prepare(`
+      INSERT INTO transactions 
+        (id, wallet_id, tx_hash, from_address, to_address, amount, status, block_number, gas_used, timestamp)
+      VALUES 
+        (@id, @wallet_id, @tx_hash, @from_address, @to_address, @amount, @status, @block_number, @gas_used, @timestamp)
+      ON CONFLICT(tx_hash) DO UPDATE SET
+        status = excluded.status,
+        block_number = excluded.block_number,
+        gas_used = excluded.gas_used
+    `);
+    return stmt.run(row);
+  },
+
+  getTransactionsByWallet(walletId: string): TransactionRow[] {
+    return db.prepare(`
+      SELECT * FROM transactions WHERE wallet_id = ? ORDER BY timestamp DESC LIMIT 100
+    `).all(walletId) as TransactionRow[];
+  },
+
+  getTransactionByHash(hash: string): TransactionRow | undefined {
+    return db.prepare('SELECT * FROM transactions WHERE tx_hash = ?')
+      .get(hash) as TransactionRow | undefined;
+  }
+};
+
+export default db;
+```
