@@ -1,0 +1,1194 @@
+🗂️ ساختار اضافه‌شده
+
+```text
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── vpn.config.ts                    ← جدید
+│   ├── data/
+│   │   └── ip2proxy/
+│   │       └── IP2PROXY-LITE-PX11.BIN       ← دیتابیس آفلاین
+│   ├── services/
+│   │   ├── vpnDetection.service.ts          ← جدید (هسته اصلی)
+│   │   └── torDetection.service.ts          ← جدید
+│   ├── middleware/
+│   │   └── vpnDetection.middleware.ts       ← جدید
+│   └── routes/
+│       └── vpn.routes.ts                    ← جدید (admin)
+└── src/
+    └── components/
+        └── admin/
+            └── VpnDetectionPanel.tsx        ← جدید
+```
+
+---
+
+📦 نصب پکیج‌ها
+
+```bash
+npm install ip2proxy-nodejs maxmind @maxmind/geoip2-node
+npm install -D @types/maxmind
+```
+
+💡 چرا ip2proxy-nodejs؟ دیتابیس IP2Proxy LITE PX11 رایگانه، آفلاین کار می‌کنه، و VPN + Proxy + Tor + Data Center + Web Hosting رو تشخیص می‌ده. برای production می‌تونی به IPQS یا MaxMind Anonymous Plus ارتقا بدی.
+
+---
+
+⚙️ .env.example — اضافه کن
+
+```env
+# ───── VPN Detection ─────
+VPN_DETECTION_ENABLED=true
+# حالت: 'monitor' (فقط لاگ) | 'challenge' (CAPTCHA/2FA) | 'block'
+VPN_ACTION=challenge
+
+# آستانه risk score (0-100)
+VPN_RISK_THRESHOLD=70
+
+# ───── Provider Selection ─────
+# 'ip2proxy' (آفلاین، رایگان) | 'ipqualityscore' | 'maxmind' | 'vpnapi' | 'proxycheck'
+VPN_PRIMARY_PROVIDER=ip2proxy
+VPN_FALLBACK_PROVIDER=
+
+# IP2Proxy
+IP2PROXY_DB_PATH=./server/data/ip2proxy/IP2PROXY-LITE-PX11.BIN
+
+# IPQualityScore (اختیاری، دقیق‌تر)
+IPQS_API_KEY=
+IPQS_STRICTNESS=1
+
+# VPN API (اختیاری، free tier 1000/day)
+VPNAPI_KEY=
+
+# ───── Cache ─────
+VPN_CACHE_TTL_MS=3600000
+VPN_CACHE_MAX_SIZE=10000
+
+# ───── باورداشت‌های نادرست (Whitelist) ─────
+# iCloud Private Relay, Apple ranges و... رو نادیده بگیر
+VPN_IGNORE_APPLE_RELAY=true
+VPN_IGNORE_GOOGLE_VPN=true
+
+# ───── کدهای کشور معاف ─────
+# کاربران از این کشورها حتی با VPN هم اجازه دارن
+VPN_EXEMPT_COUNTRIES=IR,DE,FR
+```
+
+---
+
+⚙️ server/config/vpn.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const VPN_CONFIG = {
+  enabled: process.env.VPN_DETECTION_ENABLED === 'true',
+  action: (process.env.VPN_ACTION || 'challenge') as 'monitor' | 'challenge' | 'block',
+  riskThreshold: Number(process.env.VPN_RISK_THRESHOLD || 70),
+
+  providers: {
+    primary: (process.env.VPN_PRIMARY_PROVIDER || 'ip2proxy') as VpnProvider,
+    fallback: (process.env.VPN_FALLBACK_PROVIDER || '') as VpnProvider | ''
+  },
+
+  ip2proxy: {
+    dbPath: process.env.IP2PROXY_DB_PATH || './server/data/ip2proxy/IP2PROXY-LITE-PX11.BIN'
+  },
+
+  ipqs: {
+    apiKey: process.env.IPQS_API_KEY || '',
+    strictness: Number(process.env.IPQS_STRICTNESS || 1),
+    baseUrl: 'https://ipqualityscore.com/api/json/ip'
+  },
+
+  vpnapi: {
+    apiKey: process.env.VPNAPI_KEY || '',
+    baseUrl: 'https://vpnapi.io/api'
+  },
+
+  cache: {
+    ttlMs: Number(process.env.VPN_CACHE_TTL_MS || 3600000),
+    maxSize: Number(process.env.VPN_CACHE_MAX_SIZE || 10000)
+  },
+
+  ignore: {
+    appleRelay: process.env.VPN_IGNORE_APPLE_RELAY !== 'false',
+    googleVpn: process.env.VPN_IGNORE_GOOGLE_VPN !== 'false'
+  },
+
+  exemptCountries: (process.env.VPN_EXEMPT_COUNTRIES || '').split(',').map(c => c.trim().toUpperCase()).filter(Boolean),
+
+  // ───── Risk Score Matrix ─────
+  riskWeights: {
+    isVpn: 25,
+    isProxy: 30,
+    isTor: 60,
+    isHosting: 20,
+    isDatacenter: 20,
+    recentAbuse: 30,
+    isBlacklisted: 40,
+    activeVpn: 35,
+    activeTor: 70,
+    residentialProxy: 40,
+    timezoneMismatch: 10
+  },
+
+  // ───── IP های خاص که نادیده گرفته می‌شن ─────
+  knownAppleRelayRanges: [
+    '17.0.0.0/8',
+    '104.28.0.0/16'
+  ],
+
+  torExitNodesUrl: 'https://check.torproject.org/torbulkexitlist'
+} as const;
+
+export type VpnProvider = 'ip2proxy' | 'ipqualityscore' | 'maxmind' | 'vpnapi' | 'proxycheck';
+```
+
+---
+
+🛡️ server/services/vpnDetection.service.ts — هسته اصلی
+
+```typescript
+import crypto from 'crypto';
+import fs from 'fs';
+import { IP2Proxy } from 'ip2proxy-nodejs';
+import { VPN_CONFIG, VpnProvider } from '../config/vpn.config.js';
+
+// ═══════════════════════════════════════════
+//  Types
+// ═══════════════════════════════════════════
+export interface VpnDetectionResult {
+  ip: string;
+  isVpn: boolean;
+  isProxy: boolean;
+  isTor: boolean;
+  isHosting: boolean;
+  isDatacenter: boolean;
+  isResidentialProxy: boolean;
+  isAppleRelay: boolean;
+  isBlacklisted: boolean;
+  recentAbuse: boolean;
+  provider: string;
+  providerName?: string;
+  riskScore: number;              // 0-100
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  reasons: string[];
+  raw?: any;
+  cached: boolean;
+}
+
+interface CacheEntry {
+  result: VpnDetectionResult;
+  expiresAt: number;
+}
+
+// ═══════════════════════════════════════════
+//  Cache (LRU + TTL)
+// ═══════════════════════════════════════════
+class VpnCache {
+  private store = new Map<string, CacheEntry>();
+
+  get(ip: string): VpnDetectionResult | null {
+    const entry = this.store.get(ip);
+    if (!entry) return null;
+    if (entry.expiresAt < Date.now()) {
+      this.store.delete(ip);
+      return null;
+    }
+    // LRU: دوباره اضافه کن
+    this.store.delete(ip);
+    this.store.set(ip, entry);
+    return entry.result;
+  }
+
+  set(ip: string, result: VpnDetectionResult) {
+    if (this.store.size >= VPN_CONFIG.cache.maxSize) {
+      // حذف قدیمی‌ترین
+      const firstKey = this.store.keys().next().value;
+      if (firstKey) this.store.delete(firstKey);
+    }
+    this.store.set(ip, {
+      result,
+      expiresAt: Date.now() + VPN_CONFIG.cache.ttlMs
+    });
+  }
+
+  clear() { this.store.clear(); }
+  size() { return this.store.size; }
+}
+
+// ═══════════════════════════════════════════
+//  Main Service
+// ═══════════════════════════════════════════
+export class VpnDetectionService {
+  private cache = new VpnCache();
+  private ip2proxyReader: IP2Proxy | null = null;
+  private torExitNodes: Set<string> = new Set();
+  private torNodesLastSync = 0;
+
+  // ───── Init ─────
+  async init() {
+    // IP2Proxy
+    if (VPN_CONFIG.providers.primary === 'ip2proxy' || VPN_CONFIG.providers.fallback === 'ip2proxy') {
+      try {
+        if (fs.existsSync(VPN_CONFIG.ip2proxy.dbPath)) {
+          this.ip2proxyReader = new IP2Proxy();
+          this.ip2proxyReader.open(VPN_CONFIG.ip2proxy.dbPath, IP2Proxy.IOModes.IP2PROXY_MEMORY_MAPPED);
+          console.log('✅ IP2Proxy DB loaded');
+        } else {
+          console.warn('⚠️  IP2Proxy DB not found at', VPN_CONFIG.ip2proxy.dbPath);
+        }
+      } catch (err) {
+        console.error('❌ IP2Proxy load failed:', err);
+      }
+    }
+
+    // Tor exit nodes
+    await this.syncTorExitNodes();
+    // هر ۶ ساعت به‌روز کن
+    setInterval(() => this.syncTorExitNodes(), 6 * 60 * 60 * 1000);
+  }
+
+  // ───── Main Check ─────
+  async check(ip: string, opts: { timezone?: string; userAgent?: string } = {}): Promise<VpnDetectionResult> {
+    const normalized = this.normalizeIp(ip);
+
+    // Private IPs → بی‌خطر
+    if (this.isPrivate(normalized)) {
+      return this.makeResult(normalized, {
+        isVpn: false, isProxy: false, isTor: false,
+        isHosting: false, isDatacenter: false, isResidentialProxy: false,
+        isAppleRelay: false, isBlacklisted: false, recentAbuse: false,
+        provider: 'system', providerName: 'private_ip',
+        reasons: ['private_ip']
+      }, false);
+    }
+
+    // Cache
+    const cached = this.cache.get(normalized);
+    if (cached) return { ...cached, cached: true };
+
+    // Try primary provider
+    let result: VpnDetectionResult | null = null;
+    try {
+      result = await this.checkWithProvider(normalized, VPN_CONFIG.providers.primary, opts);
+    } catch (err) {
+      console.error(`[VPN] Primary provider (${VPN_CONFIG.providers.primary}) failed:`, err);
+    }
+
+    // Fallback
+    if (!result && VPN_CONFIG.providers.fallback) {
+      try {
+        result = await this.checkWithProvider(normalized, VPN_CONFIG.providers.fallback as VpnProvider, opts);
+      } catch (err) {
+        console.error(`[VPN] Fallback provider failed:`, err);
+      }
+    }
+
+    // همه شکست خوردن → fail-open
+    if (!result) {
+      result = this.makeResult(normalized, {
+        isVpn: false, isProxy: false, isTor: false,
+        isHosting: false, isDatacenter: false, isResidentialProxy: false,
+        isAppleRelay: false, isBlacklisted: false, recentAbuse: false,
+        provider: 'none', providerName: 'all_providers_failed',
+        reasons: ['provider_error_fail_open']
+      }, false);
+    }
+
+    // Augment: Tor check (independent)
+    if (!result.isTor && this.torExitNodes.has(normalized)) {
+      result.isTor = true;
+      result.reasons.push('tor_exit_node');
+      result.riskScore = Math.min(100, result.riskScore + VPN_CONFIG.riskWeights.isTor);
+    }
+
+    // Recompute risk level
+    result.riskLevel = this.scoreToLevel(result.riskScore);
+
+    this.cache.set(normalized, result);
+    return result;
+  }
+
+  // ───── Provider Dispatcher ─────
+  private async checkWithProvider(
+    ip: string,
+    provider: VpnProvider,
+    opts: { timezone?: string }
+  ): Promise<VpnDetectionResult> {
+    switch (provider) {
+      case 'ip2proxy':
+        return this.checkIP2Proxy(ip);
+      case 'ipqualityscore':
+        return this.checkIPQualityScore(ip);
+      case 'vpnapi':
+        return this.checkVpnApi(ip);
+      default:
+        throw new Error(`Unknown provider: ${provider}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  //  Provider: IP2Proxy (آفلاین، رایگان)
+  // ═══════════════════════════════════════════
+  private checkIP2Proxy(ip: string): VpnDetectionResult {
+    if (!this.ip2proxyReader) {
+      throw new Error('IP2Proxy DB not loaded');
+    }
+
+    const r = this.ip2proxyReader.getAll(ip);
+    if (!r) throw new Error('IP2Proxy lookup failed');
+
+    const isVpn = r.isProxy === 'VPN' || r.proxyType === 'VPN';
+    const isTor = r.isProxy === 'TOR' || r.proxyType === 'TOR';
+    const isProxy = r.isProxy === 'PUB' || r.isProxy === 'WEB' || r.isProxy === 'SES' ||
+                   r.proxyType?.includes('Proxy') || (r.isProxy && !isVpn && !isTor);
+    const isDatacenter = r.usageType === 'DCH' || r.isProxy === 'DCH';
+    const isHosting = r.usageType === 'DCH' || r.provider?.toLowerCase().includes('hosting');
+
+    return this.makeResult(ip, {
+      isVpn: !!isVpn,
+      isProxy: !!isProxy,
+      isTor: !!isTor,
+      isHosting: !!isHosting,
+      isDatacenter: !!isDatacenter,
+      isResidentialProxy: false,
+      isAppleRelay: false,
+      isBlacklisted: false,
+      recentAbuse: false,
+      provider: 'ip2proxy',
+      providerName: r.proxyType || r.usageType || 'unknown',
+      reasons: [
+        isVpn && 'vpn_detected',
+        isTor && 'tor_exit_node',
+        isProxy && 'proxy_detected',
+        isDatacenter && 'datacenter_range'
+      ].filter(Boolean) as string[]
+    }, false);
+  }
+
+  // ═══════════════════════════════════════════
+  //  Provider: IPQualityScore (API، دقیق)
+  // ═══════════════════════════════════════════
+  private async checkIPQualityScore(ip: string): Promise<VpnDetectionResult> {
+    const { apiKey, strictness, baseUrl } = VPN_CONFIG.ipqs;
+    if (!apiKey) throw new Error('IPQS_API_KEY not set');
+
+    const url = `${baseUrl}/${apiKey}/${ip}?strictness=${strictness}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`IPQS HTTP ${res.status}`);
+
+    const data = await res.json();
+    if (data.success === false && data.message?.includes('quota')) {
+      throw new Error('IPQS quota exceeded');
+    }
+
+    const reasons: string[] = [];
+    if (data.proxy) reasons.push('proxy_detected');
+    if (data.vpn) reasons.push('vpn_detected');
+    if (data.tor) reasons.push('tor_exit_node');
+    if (data.active_vpn) reasons.push('active_vpn');
+    if (data.active_tor) reasons.push('active_tor');
+    if (data.recent_abuse) reasons.push('recent_abuse');
+    if (data.is_crawler) reasons.push('crawler');
+    if (data.is_bot) reasons.push('bot_traffic');
+    if (data.is_datacenter) reasons.push('datacenter_range');
+    if (data.hosting) reasons.push('hosting_provider');
+
+    return this.makeResult(ip, {
+      isVpn: !!data.vpn || !!data.active_vpn,
+      isProxy: !!data.proxy,
+      isTor: !!data.tor || !!data.active_tor,
+      isHosting: !!data.hosting,
+      isDatacenter: !!data.is_datacenter,
+      isResidentialProxy: !!data.residential_proxy,
+      isAppleRelay: false,
+      isBlacklisted: !!data.is_blacklisted,
+      recentAbuse: !!data.recent_abuse,
+      provider: 'ipqualityscore',
+      providerName: data.ISP || data.organization || 'unknown',
+      reasons,
+      raw: data
+    }, false);
+  }
+
+  // ═══════════════════════════════════════════
+  //  Provider: VPNAPI.io (free tier 1000/day)
+  // ═══════════════════════════════════════════
+  private async checkVpnApi(ip: string): Promise<VpnDetectionResult> {
+    const { apiKey, baseUrl } = VPN_CONFIG.vpnapi;
+    if (!apiKey) throw new Error('VPNAPI_KEY not set');
+
+    const res = await fetch(`${baseUrl}/${ip}?key=${apiKey}`);
+    if (!res.ok) throw new Error(`VPNAPI HTTP ${res.status}`);
+
+    const data = await res.json();
+    const sec = data.security || {};
+
+    const reasons: string[] = [];
+    if (sec.vpn) reasons.push('vpn_detected');
+    if (sec.proxy) reasons.push('proxy_detected');
+    if (sec.tor) reasons.push('tor_exit_node');
+    if (sec.relay) reasons.push('apple_private_relay');
+
+    return this.makeResult(ip, {
+      isVpn: !!sec.vpn,
+      isProxy: !!sec.proxy,
+      isTor: !!sec.tor,
+      isHosting: false,
+      isDatacenter: false,
+      isResidentialProxy: false,
+      isAppleRelay: !!sec.relay,
+      isBlacklisted: false,
+      recentAbuse: false,
+      provider: 'vpnapi',
+      providerName: data.network?.autonomous_system_organization || 'unknown',
+      reasons,
+      raw: data
+    }, false);
+  }
+
+  // ═══════════════════════════════════════════
+  //  Result Builder + Risk Score
+  // ═══════════════════════════════════════════
+  private makeResult(
+    ip: string,
+    data: Omit<VpnDetectionResult, 'ip' | 'riskScore' | 'riskLevel' | 'cached'>,
+    cached: boolean
+  ): VpnDetectionResult {
+    let score = 0;
+    const W = VPN_CONFIG.riskWeights;
+
+    if (data.isVpn) score += W.isVpn;
+    if (data.isProxy) score += W.isProxy;
+    if (data.isTor) score += W.isTor;
+    if (data.isHosting) score += W.isHosting;
+    if (data.isDatacenter) score += W.isDatacenter;
+    if (data.isResidentialProxy) score += W.residentialProxy;
+    if (data.isBlacklisted) score += W.isBlacklisted;
+    if (data.recentAbuse) score += W.recentAbuse;
+
+    // Apple Relay رو نادیده بگیر (کاربران مشروع اپل)
+    if (VPN_CONFIG.ignore.appleRelay && data.isAppleRelay) {
+      score = Math.max(0, score - W.isVpn - W.isProxy);
+      data.reasons.push('apple_relay_exempted');
+    }
+
+    score = Math.min(100, score);
+
+    return {
+      ip,
+      ...data,
+      riskScore: score,
+      riskLevel: this.scoreToLevel(score),
+      cached
+    };
+  }
+
+  private scoreToLevel(score: number): 'low' | 'medium' | 'high' | 'critical' {
+    if (score >= 80) return 'critical';
+    if (score >= 60) return 'high';
+    if (score >= 30) return 'medium';
+    return 'low';
+  }
+
+  // ═══════════════════════════════════════════
+  //  Tor Exit Node Sync
+  // ═══════════════════════════════════════════
+  private async syncTorExitNodes() {
+    try {
+      const res = await fetch(VPN_CONFIG.torExitNodesUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      this.torExitNodes = new Set(
+        text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))
+      );
+      this.torNodesLastSync = Date.now();
+      console.log(`✅ Synced ${this.torExitNodes.size} Tor exit nodes`);
+    } catch (err) {
+      console.error('[Tor] Sync failed:', err);
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  //  Helpers
+  // ═══════════════════════════════════════════
+  private normalizeIp(ip: string): string {
+    if (ip.startsWith('::ffff:')) return ip.slice(7);
+    return ip;
+  }
+
+  private isPrivate(ip: string): boolean {
+    if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return true;
+    if (ip.startsWith('10.')) return true;
+    if (ip.startsWith('192.168.')) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+    return false;
+  }
+
+  // ───── Stats ─────
+  getStats() {
+    return {
+      enabled: VPN_CONFIG.enabled,
+      action: VPN_CONFIG.action,
+      primaryProvider: VPN_CONFIG.providers.primary,
+      fallbackProvider: VPN_CONFIG.providers.fallback || null,
+      ip2proxyLoaded: !!this.ip2proxyReader,
+      torExitNodesCount: this.torExitNodes.size,
+      torLastSync: this.torNodesLastSync,
+      cacheSize: this.cache.size(),
+      riskThreshold: VPN_CONFIG.riskThreshold
+    };
+  }
+
+  clearCache() { this.cache.clear(); }
+}
+
+export const vpnDetectionService = new VpnDetectionService();
+```
+
+---
+
+🛡️ server/middleware/vpnDetection.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { vpnDetectionService, VpnDetectionResult } from '../services/vpnDetection.service.js';
+import { VPN_CONFIG } from '../config/vpn.config.js';
+import { securityService } from '../services/security.service.js';
+
+declare global {
+  namespace Express {
+    interface Request {
+      vpnDetection?: VpnDetectionResult;
+    }
+  }
+}
+
+export async function vpnDetectionGuard(req: Request, res: Response, next: NextFunction) {
+  if (!VPN_CONFIG.enabled) return next();
+
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+
+  // کشور معاف؟
+  const geoCountry = (req as any).geo?.country;
+  if (geoCountry && VPN_CONFIG.exemptCountries.includes(geoCountry.toUpperCase())) {
+    return next();
+  }
+
+  try {
+    const result = await vpnDetectionService.check(ip, {
+      timezone: (req as any).geo?.timezone,
+      userAgent: req.headers['user-agent']
+    });
+
+    req.vpnDetection = result;
+
+    // زیر آستانه → اجازه
+    if (result.riskScore < VPN_CONFIG.riskThreshold) {
+      return next();
+    }
+
+    // ثبت در لاگ suspicious
+    securityService.logSuspicious({
+      userId: (req as any).user?.sub,
+      ipAddress: ip,
+      userAgent: req.headers['user-agent'],
+      activityType: 'vpn_detected',
+      severity: result.riskLevel === 'critical' ? 'high' : 'medium',
+      details: {
+        riskScore: result.riskScore,
+        riskLevel: result.riskLevel,
+        reasons: result.reasons,
+        provider: result.provider,
+        isVpn: result.isVpn,
+        isTor: result.isTor,
+        isProxy: result.isProxy
+      }
+    });
+
+    // ───── Action ─────
+    switch (VPN_CONFIG.action) {
+      case 'monitor':
+        return next(); // فقط لاگ کن
+
+      case 'challenge':
+        return res.status(403).json({
+          success: false,
+          error: 'Additional verification required',
+          code: 'VPN_CHALLENGE',
+          riskScore: result.riskScore,
+          riskLevel: result.riskLevel
+        });
+
+      case 'block':
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied: VPN or proxy detected',
+          code: 'VPN_BLOCKED',
+          riskScore: result.riskScore,
+          riskLevel: result.riskLevel
+        });
+    }
+
+    next();
+  } catch (err) {
+    console.error('[VPN] Detection error:', err);
+    next(); // fail-open
+  }
+}
+
+/**
+ * نسخه سبک — فقط attach می‌کنه بدون بلاک
+ */
+export async function attachVpnProfile(req: Request, _res: Response, next: NextFunction) {
+  if (!VPN_CONFIG.enabled) return next();
+  const ip = req.ip || 'unknown';
+  try {
+    req.vpnDetection = await vpnDetectionService.check(ip);
+  } catch {}
+  next();
+}
+```
+
+---
+
+🛣️ server/routes/vpn.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { vpnDetectionService } from '../services/vpnDetection.service.js';
+import { VPN_CONFIG } from '../config/vpn.config.js';
+
+const router = Router();
+
+// ───── عمومی: lookup ─────
+router.get('/lookup/:ip', async (req, res, next) => {
+  try {
+    const result = await vpnDetectionService.check(req.params.ip);
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ───── ادمین ─────
+router.use(requireAuth, requireRole('admin'));
+
+router.get('/stats', (_req, res) => {
+  res.json({ success: true, data: vpnDetectionService.getStats() });
+});
+
+router.post('/cache/clear', (_req, res) => {
+  vpnDetectionService.clearCache();
+  res.json({ success: true });
+});
+
+router.get('/config', (_req, res) => {
+  res.json({
+    success: true,
+    data: {
+      enabled: VPN_CONFIG.enabled,
+      action: VPN_CONFIG.action,
+      riskThreshold: VPN_CONFIG.riskThreshold,
+      primaryProvider: VPN_CONFIG.providers.primary,
+      fallbackProvider: VPN_CONFIG.providers.fallback,
+      riskWeights: VPN_CONFIG.riskWeights,
+      exemptCountries: VPN_CONFIG.exemptCountries
+    }
+  });
+});
+
+// ───── Bulk check ─────
+router.post('/bulk-check', async (req, res, next) => {
+  try {
+    const schema = z.object({ ips: z.array(z.string()).min(1).max(100) });
+    const { ips } = schema.parse(req.body);
+
+    const results = await Promise.all(
+      ips.map(ip => vpnDetectionService.check(ip).catch(err => ({
+        ip, error: err.message, riskScore: -1, riskLevel: 'low' as const
+      })))
+    );
+    res.json({ success: true, data: results });
+  } catch (err) { next(err); }
+});
+
+export default router;
+```
+
+---
+
+🔗 اتصال به Brute-force Protection
+
+در server/services/auth.service.ts، بعد از چک رمز موفق، این رو اضافه کن:
+
+```typescript
+import { vpnDetectionService } from './vpnDetection.service.js';
+import { VPN_CONFIG } from '../config/vpn.config.js';
+
+// داخل login، قبل از issueTokens:
+if (VPN_CONFIG.enabled && ipAddress) {
+  const vpnResult = await vpnDetectionService.check(ipAddress);
+  
+  if (vpnResult.riskScore >= VPN_CONFIG.riskThreshold) {
+    securityService.logSuspicious({
+      userId: user.id,
+      ipAddress,
+      userAgent,
+      activityType: 'login_from_vpn',
+      severity: vpnResult.riskLevel === 'critical' ? 'high' : 'medium',
+      details: {
+        riskScore: vpnResult.riskScore,
+        reasons: vpnResult.reasons,
+        provider: vpnResult.provider
+      }
+    });
+
+    // اگر action=block، ورود رو رد کن
+    if (VPN_CONFIG.action === 'block') {
+      throw Object.assign(
+        new Error('Login from VPN is not allowed'),
+        { status: 403, code: 'VPN_LOGIN_BLOCKED' }
+      );
+    }
+  }
+}
+```
+
+---
+
+🖥️ server/index.ts — ترتیب لایه‌ها
+
+```typescript
+import { vpnDetectionService } from './services/vpnDetection.service.js';
+import { vpnDetectionGuard, attachVpnProfile } from './middleware/vpnDetection.middleware.js';
+import vpnRoutes from './routes/vpn.routes.js';
+
+// ... بعد از app.set('trust proxy', 1)
+await vpnDetectionService.init();
+
+// ... بعد از geoBlockGuard
+app.use('/api', attachVpnProfile);   // پروفایل VPN رو attach کن
+
+// ... روت‌ها
+app.use('/api/vpn', vpnRoutes);
+
+// روت‌های حساس (login/register) با گارد VPN
+app.use('/api/auth/login', vpnDetectionGuard);
+app.use('/api/auth/register', vpnDetectionGuard);
+```
+
+ترتیب نهایی لایه‌ها:
+
+```
+1. ipAccessGuard          → IP blacklist/whitelist
+2. geoBlockGuard          → Geo blocking
+3. attachVpnProfile       → VPN profile attach
+4. globalLimiter          → Rate limit
+5. checkIpBan             → Brute-force ban
+6. authSlowDown/authLimiter
+7. vpnDetectionGuard      → VPN block/challenge  ← جدید
+8. authRoutes
+```
+
+---
+
+🖥️ کامپوننت src/components/admin/VpnDetectionPanel.tsx
+
+```tsx
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../../api/client';
+
+export const VpnDetectionPanel: React.FC = () => {
+  const [stats, setStats] = useState<any>(null);
+  const [config, setConfig] = useState<any>(null);
+  const [lookupIp, setLookupIp] = useState('');
+  const [lookupResult, setLookupResult] = useState<any>(null);
+  const [bulkIps, setBulkIps] = useState('');
+  const [bulkResults, setBulkResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    const [s, c] = await Promise.all([
+      apiClient.vpnStats(),
+      apiClient.vpnConfig()
+    ]);
+    setStats(s);
+    setConfig(c);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleLookup = async () => {
+    if (!lookupIp.trim()) return;
+    setLoading(true);
+    try {
+      const res = await apiClient.vpnLookup(lookupIp.trim());
+      setLookupResult(res);
+    } finally { setLoading(false); }
+  };
+
+  const handleBulkCheck = async () => {
+    const ips = bulkIps.split('\n').map(s => s.trim()).filter(Boolean);
+    if (!ips.length) return;
+    setLoading(true);
+    try {
+      const res = await apiClient.vpnBulkCheck(ips);
+      setBulkResults(res);
+    } finally { setLoading(false); }
+  };
+
+  const getRiskColor = (level: string) => {
+    const colors: Record<string, string> = {
+      low: '#10b981', medium: '#f59e0b', high: '#ef4444', critical: '#dc2626'
+    };
+    return colors[level] || '#6b7280';
+  };
+
+  return (
+    <div className="admin-panel">
+      <h2>🔍 تشخیص VPN / Proxy / Tor</h2>
+
+      {stats && (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <span>وضعیت</span>
+            <strong>{stats.enabled ? '✅ فعال' : '⛔ غیرفعال'}</strong>
+          </div>
+          <div className="stat-card">
+            <span>اکشن</span>
+            <strong>{stats.action}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Provider</span>
+            <strong>{stats.primaryProvider}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Tor Nodes</span>
+            <strong>{stats.torExitNodesCount?.toLocaleString() || 0}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Cache</span>
+            <strong>{stats.cacheSize || 0}</strong>
+          </div>
+          <div className="stat-card">
+            <span>آستانه</span>
+            <strong>{stats.riskThreshold}</strong>
+          </div>
+        </div>
+      )}
+
+      {/* ───── Lookup تک IP ───── */}
+      <div className="lookup-box">
+        <input
+          value={lookupIp}
+          onChange={e => setLookupIp(e.target.value)}
+          placeholder="مثلاً 45.83.91.1 (VPN شناخته‌شده)"
+          dir="ltr"
+        />
+        <button onClick={handleLookup} disabled={loading}>
+          {loading ? '…' : '🔍 بررسی'}
+        </button>
+      </div>
+
+      {lookupResult && (
+        <div className="vpn-result-card">
+          <div className="vpn-result-header">
+            <code dir="ltr">{lookupResult.ip}</code>
+            <span
+              className="risk-badge"
+              style={{ background: getRiskColor(lookupResult.riskLevel) }}
+            >
+              {lookupResult.riskLevel} · {lookupResult.riskScore}/100
+            </span>
+          </div>
+          <div className="vpn-flags">
+            {[
+              ['VPN', lookupResult.isVpn],
+              ['Proxy', lookupResult.isProxy],
+              ['Tor', lookupResult.isTor],
+              ['Datacenter', lookupResult.isDatacenter],
+              ['Hosting', lookupResult.isHosting],
+              ['Residential Proxy', lookupResult.isResidentialProxy],
+              ['Apple Relay', lookupResult.isAppleRelay],
+              ['Blacklisted', lookupResult.isBlacklisted],
+              ['Recent Abuse', lookupResult.recentAbuse]
+            ].map(([label, val]) => (
+              <span key={label as string} className={`flag ${val ? 'on' : 'off'}`}>
+                {val ? '✅' : '⛔'} {label as string}
+              </span>
+            ))}
+          </div>
+          <div className="vpn-meta">
+            <div><b>Provider:</b> {lookupResult.provider}</div>
+            {lookupResult.providerName && <div><b>Network:</b> {lookupResult.providerName}</div>}
+            <div><b>Reasons:</b> {lookupResult.reasons?.join(', ') || '—'}</div>
+            {lookupResult.cached && <div className="cached-tag">📦 از کش</div>}
+          </div>
+        </div>
+      )}
+
+      {/* ───── Bulk Check ───── */}
+      <h3>بررسی گروهی (هر خط یک IP)</h3>
+      <div className="bulk-box">
+        <textarea
+          value={bulkIps}
+          onChange={e => setBulkIps(e.target.value)}
+          placeholder={'8.8.8.8\n1.1.1.1\n45.83.91.1'}
+          dir="ltr"
+          rows={5}
+        />
+        <button className="btn-primary" onClick={handleBulkCheck} disabled={loading}>
+          بررسی همه
+        </button>
+      </div>
+
+      {bulkResults.length > 0 && (
+        <table className="admin-table compact">
+          <thead>
+            <tr>
+              <th>IP</th>
+              <th>Risk</th>
+              <th>VPN</th>
+              <th>Tor</th>
+              <th>Proxy</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bulkResults.map(r => (
+              <tr key={r.ip}>
+                <td><code dir="ltr">{r.ip}</code></td>
+                <td>
+                  <span style={{ color: getRiskColor(r.riskLevel) }}>
+                    {r.riskScore}/100 ({r.riskLevel})
+                  </span>
+                </td>
+                <td>{r.isVpn ? '✅' : '—'}</td>
+                <td>{r.isTor ? '✅' : '—'}</td>
+                <td>{r.isProxy ? '✅' : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {/* ───── Config ───── */}
+      {config && (
+        <>
+          <h3>وزن‌های Risk Score</h3>
+          <div className="risk-weights">
+            {Object.entries(config.riskWeights || {}).map(([k, v]) => (
+              <div key={k} className="weight-item">
+                <span>{k}</span>
+                <strong>+{v as number}</strong>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+```
+
+---
+
+🌐 متدهای اضافی در src/api/client.ts
+
+```typescript
+// ───── VPN Detection ─────
+vpnStats: () =>
+  request<any>('/vpn/stats'),
+
+vpnConfig: () =>
+  request<any>('/vpn/config'),
+
+vpnLookup: (ip: string) =>
+  request<any>(`/vpn/lookup/${ip}`),
+
+vpnBulkCheck: (ips: string[]) =>
+  request<any[]>('/vpn/bulk-check', {
+    method: 'POST',
+    body: JSON.stringify({ ips })
+  }),
+
+vpnClearCache: () =>
+  request<{}>('/vpn/cache/clear', { method: 'POST' })
+```
+
+---
+
+🎨 استایل‌های اضافی
+
+```css
+.vpn-result-card {
+  padding: 20px;
+  background: #0d0f14;
+  border-radius: 12px;
+  margin: 16px 0;
+  border: 1px solid #2a2f3d;
+}
+.vpn-result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.vpn-result-header code {
+  font-size: 1.1rem;
+  color: #6c7cff;
+  background: #14161c;
+  padding: 6px 12px;
+  border-radius: 8px;
+}
+.risk-badge {
+  padding: 6px 14px;
+  border-radius: 20px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.vpn-flags {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.flag {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  text-align: center;
+  font-weight: 500;
+}
+.flag.on { background: #3a1a1a; color: #fca5a5; }
+.flag.off { background: #14161c; color: #6b7280; }
+.vpn-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.88rem;
+  color: #a4acbd;
+  padding-top: 12px;
+  border-top: 1px solid #1a1d26;
+}
+.cached-tag {
+  display: inline-block;
+  background: #1e3a5f;
+  color: #60a5fa;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  width: fit-content;
+}
+
+.bulk-box {
+  display: flex;
+  gap: 8px;
+  flex-direction: column;
+  margin-bottom: 16px;
+}
+.bulk-box textarea {
+  width: 100%;
+  padding: 12px;
+  background: #0d0f14;
+  border: 1px solid #2a2f3d;
+  border-radius: 8px;
+  color: #fff;
+  font-family: monospace;
+  resize: vertical;
+}
+
+.risk-weights {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+.weight-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #0d0f14;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+.weight-item strong { color: #f59e0b; }
+```
+
+---
+
+🚀 راه‌اندازی
+
+```bash
+# 1. نصب پکیج‌ها
+npm install ip2proxy-nodejs
+
+# 2. دانلود دیتابیس IP2Proxy LITE (رایگان)
+mkdir -p server/data/ip2proxy
+curl -L -o server/data/ip2proxy/IP2PROXY-LITE-PX11.BIN \
+  "https://cdn.ip2location.com/assets/ip2proxy/IP2PROXY-LITE-PX11.BIN"
+
+# یا از GitHub:
+# wget https://github.com/ip2location/ip2proxy-nodejs/raw/master/IP2PROXY-LITE-PX11.BIN
+
+# 3. اجرا
+npm run dev
+```
+
+---
+
+🧪 تست سریع
+
+```bash
+# ───── Lookup یک IP ─────
+curl http://localhost:3001/api/vpn/lookup/45.83.91.1 | jq
+# → { isVpn: true, riskScore: 25, riskLevel: "medium", ... }
+
+# ───── IP تمیز ─────
+curl http://localhost:3001/api/vpn/lookup/8.8.8.8 | jq
+# → { isVpn: false, riskScore: 0, riskLevel: "low", ... }
+
+# ───── Bulk ─────
+curl -X POST http://localhost:3001/api/vpn/bulk-check \
+  -H "Authorization: Bearer <ADMIN>" \
+  -H "Content-Type: application/json" \
+  -d '{"ips":["8.8.8.8","45.83.91.1","1.1.1.1"]}' | jq
+
+# ───── آمار ─────
+curl http://localhost:3001/api/vpn/stats \
+  -H "Authorization: Bearer <ADMIN>" | jq
+```
+
+---
+
+✅ خلاصه ویژگی‌های اضافه‌شده
+
+ویژگی توضیح
+🎯 تشخیص چندلایه VPN + Proxy + Tor + Datacenter + Hosting + Residential Proxy
+📴 آفلاین (IP2Proxy) دیتابیس LITE رایگان، بدون API call
+☁️ API (IPQS/VPNAPI) fallback با دقت بالاتر
+🧅 Tor Exit Nodes sync خودکار از Tor Project هر ۶ ساعت
+⚖️ Risk Score (0-100) ماتریس وزنی قابل تنظیم
+📦 LRU + TTL Cache 10000 IP با TTL 1 ساعته
+🔀 3 حالت monitor / challenge / block
+🍎 Apple Relay Handling تشخیص و نادیده گرفتن Private Relay
+🌍 Country Exemption معافیت کشورهای خاص
+🔗 اتصال به Brute-force لاگ در suspicious_activity
+📊 Admin UI lookup + bulk + config + stats
+🛡️ Fail-Open اگر provider خطا داد، اجازه می‌ده
+🚫 HTTP 403 + code VPN_BLOCKED / VPN_CHALLENGE
+
+معماری چندلایه:
+
+```
+L1: IP Access Guard       → blacklist/whitelist
+L2: Geo Block Guard       → کشور ممنوع
+L3: VPN Detection         → VPN/Proxy/Tor      ← جدید
+L4: Global Rate Limit     → 300/min
+L5: Brute-force IP Ban
+L6: Auth Rate Limit + Slow-down
+L7: 2FA / OAuth
+```
