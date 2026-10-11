@@ -1,0 +1,2576 @@
+
+---
+
+🗂️ ساختار اضافه‌شده
+
+```text
+apz-wallet/
+├── server/
+│   ├── config/
+│   │   └── botDetection.config.ts           ← جدید
+│   ├── services/
+│   │   ├── botDetection.service.ts          ← جدید (هسته اصلی)
+│   │   ├── fingerprint.service.ts           ← جدید
+│   │   └── ja3.service.ts                   ← جدید (TLS fingerprint)
+│   ├── middleware/
+│   │   └── botDetection.middleware.ts       ← جدید
+│   └── routes/
+│       └── bot.routes.ts                    ← جدید (admin)
+└── src/
+    ├── fingerprint/
+    │   ├── FingerprintCollector.ts          ← جدید (کلاینت)
+    │   ├── behavioralTracker.ts             ← جدید
+    │   └── useFingerprint.ts                ← جدید (hook)
+    └── components/
+        ├── BotChallengePage.tsx             ← جدید
+        └── admin/
+            └── BotDetectionPanel.tsx        ← جدید
+```
+
+---
+
+📦 نصب پکیج‌ها
+
+```bash
+npm install ua-parser-js device-detector-js botd @fingerprintjs/fingerprintjs-pro-server-api
+npm install -D @types/ua-parser-js
+```
+
+💡 استراتژی ترکیبی:
+
+· Client-side: جمع‌آوری fingerprint + رفتار با JS سبک خودمون
+· Server-side: تحلیل User-Agent + JA3 TLS + rate-based heuristics
+· اختیاری: FingerprintJS Pro برای دقت 99.5%
+
+---
+
+⚙️ .env.example — اضافه کن
+
+```env
+# ───── Bot Detection ─────
+BOT_DETECTION_ENABLED=true
+# حالت: 'monitor' | 'challenge' | 'block'
+BOT_ACTION=challenge
+# آستانه risk score (0-100)
+BOT_RISK_THRESHOLD=60
+
+# ───── Fingerprint Providers ─────
+# 'internal' (سبک، پیش‌فرض) | 'fingerprintjs' | 'botd'
+BOT_PRIMARY_PROVIDER=internal
+
+# FingerprintJS Pro (اختیاری)
+FINGERPRINTJS_API_KEY=
+FINGERPRINTJS_REGION=us
+
+# ───── Behavioral Analysis ─────
+# حداقل زمان اقامت در صفحه (ms) قبل از اجازه
+MIN_PAGE_DWELL_MS=2000
+# حداقل تعداد mouse move
+MIN_MOUSE_EVENTS=10
+# حداکثر سرعت mouse (px/s) — بالاتر = bot
+MAX_MOUSE_SPEED=5000
+# حداقل jitter تصادفی در keyboard
+MIN_KEYSTROKE_VARIANCE=20
+
+# ───── Headless Detection ─────
+HEADLESS_BLOCK_ENABLED=true
+
+# ───── TLS Fingerprint (JA3) ─────
+JA3_BLOCK_ENABLED=false
+JA3_BLOCKED_HASHES=
+
+# ───── Reputation ─────
+# مدت cache fingerprint (ms)
+FINGERPRINT_CACHE_TTL=86400000
+```
+
+---
+
+⚙️ server/config/botDetection.config.ts
+
+```typescript
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const BOT_CONFIG = {
+  enabled: process.env.BOT_DETECTION_ENABLED === 'true',
+  action: (process.env.BOT_ACTION || 'challenge') as 'monitor' | 'challenge' | 'block',
+  riskThreshold: Number(process.env.BOT_RISK_THRESHOLD || 60),
+  primaryProvider: (process.env.BOT_PRIMARY_PROVIDER || 'internal') as 'internal' | 'fingerprintjs' | 'botd',
+
+  fingerprintjs: {
+    apiKey: process.env.FINGERPRINTJS_API_KEY || '',
+    region: process.env.FINGERPRINTJS_REGION || 'us'
+  },
+
+  behavioral: {
+    minPageDwellMs: Number(process.env.MIN_PAGE_DWELL_MS || 2000),
+    minMouseEvents: Number(process.env.MIN_MOUSE_EVENTS || 10),
+    maxMouseSpeed: Number(process.env.MAX_MOUSE_SPEED || 5000),
+    minKeystrokeVariance: Number(process.env.MIN_KEYSTROKE_VARIANCE || 20)
+  },
+
+  headless: {
+    blockEnabled: process.env.HEADLESS_BLOCK_ENABLED !== 'false'
+  },
+
+  ja3: {
+    blockEnabled: process.env.JA3_BLOCK_ENABLED === 'true',
+    blockedHashes: (process.env.JA3_BLOCKED_HASHES || '').split(',').filter(Boolean)
+  },
+
+  cache: {
+    ttlMs: Number(process.env.FINGERPRINT_CACHE_TTL || 86400000)
+  },
+
+  // ═══════════════════════════════════════════
+  //  Risk Score Weights
+  // ═══════════════════════════════════════════
+  riskWeights: {
+    // ───── Headless Detection ─────
+    webdriverFlag: 40,
+    headlessUA: 50,
+    missingPlugins: 15,
+    noLanguages: 20,
+    zeroChromeObj: 30,
+    phantomProps: 45,
+
+    // ───── Fingerprint Anomalies ─────
+    canvasBlocked: 15,
+    webglBlocked: 15,
+    emptyFingerprint: 40,
+    duplicateFingerprint: 35,           // همین fingerprint از چند IP
+
+    // ───── Behavioral ─────
+    noMouseMovement: 35,
+    noKeyboardEvents: 25,
+    tooFastFormFill: 30,                // فرم در < 2s پر شده
+    superhumanMouseSpeed: 40,
+    linearMouseMovement: 30,            // حرکت کاملاً خطی
+    perfectTiming: 25,                  // فشار کلید با فاصله دقیقاً یکسان
+
+    // ───── TLS / Network ─────
+    suspiciousJa3: 35,
+    knownBotJa3: 60,
+    missingAcceptLanguage: 15,
+    automationHeaders: 25,              // X-Requested-With: Headless...
+
+    // ───── Historical ─────
+    knownBotFingerprint: 70,
+    highRequestRate: 30,
+    previouslyFlagged: 50
+  },
+
+  // ═══════════════════════════════════════════
+  //  Known Bot Signatures
+  // ═══════════════════════════════════════════
+  botUserAgents: [
+    /bot/i, /crawler/i, /spider/i, /scraper/i,
+    /headless/i, /phantom/i, /selenium/i, /puppeteer/i,
+    /playwright/i, /curl/i, /wget/i, /python/i, /java\//i,
+    /go-http/i, /axios/i, /node-fetch/i, /okhttp/i,
+    /postman/i, /insomnia/i
+  ],
+
+  suspiciousHeaders: [
+    'x-requested-with',
+    'x-automation',
+    'x-selenium',
+    'x-puppeteer',
+    'x-playwright',
+    'x-webdriver'
+  ],
+
+  // JA3 hash های شناخته‌شده (نمونه)
+  knownBadJa3: [
+    '6734f37431670b3ab4292b8f60f29984', // Python requests
+    '3b5074b1b5d032e5620f69f9f700ff0e', // curl
+    '51c64c77e60f3980eea90869b68c58a8'  // Headless Chrome
+  ]
+} as const;
+```
+
+---
+
+🗄️ به‌روزرسانی server/services/db.service.ts
+
+```typescript
+db.exec(`
+  -- ───── Fingerprints ─────
+  CREATE TABLE IF NOT EXISTS fingerprints (
+    id TEXT PRIMARY KEY,
+    visitor_id TEXT UNIQUE NOT NULL,        -- شناسه یکتا از کلاینت
+    fingerprint_hash TEXT NOT NULL,         -- hash تمام اجزا
+    components TEXT NOT NULL,               -- JSON: {canvas, webgl, ...}
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    is_bot INTEGER NOT NULL DEFAULT 0,
+    is_verified INTEGER NOT NULL DEFAULT 0, -- اگر CAPTCHA حل کرد
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    associated_user_ids TEXT,               -- JSON array
+    associated_ips TEXT,                    -- JSON array
+    user_agents TEXT,                       -- JSON array
+    flags TEXT                              -- JSON array of reasons
+  );
+  CREATE INDEX IF NOT EXISTS idx_fp_hash ON fingerprints(fingerprint_hash);
+  CREATE INDEX IF NOT EXISTS idx_fp_visitor ON fingerprints(visitor_id);
+  CREATE INDEX IF NOT EXISTS idx_fp_risk ON fingerprints(risk_score);
+  CREATE INDEX IF NOT EXISTS idx_fp_bot ON fingerprints(is_bot);
+
+  -- ───── Behavioral Sessions ─────
+  CREATE TABLE IF NOT EXISTS behavioral_sessions (
+    id TEXT PRIMARY KEY,
+    visitor_id TEXT NOT NULL,
+    ip_address TEXT,
+    user_id TEXT,
+    page_dwell_ms INTEGER,
+    mouse_events INTEGER DEFAULT 0,
+    mouse_distance REAL DEFAULT 0,
+    mouse_avg_speed REAL DEFAULT 0,
+    mouse_max_speed REAL DEFAULT 0,
+    mouse_linearity REAL,                   -- 0-1 (1 = کاملاً خطی)
+    keystrokes INTEGER DEFAULT 0,
+    keystroke_variance REAL,
+    scroll_events INTEGER DEFAULT 0,
+    touch_events INTEGER DEFAULT 0,
+    focus_blur_count INTEGER DEFAULT 0,
+    copy_paste_count INTEGER DEFAULT 0,
+    tab_switches INTEGER DEFAULT 0,
+    form_fill_time_ms INTEGER,
+    time_to_first_interaction_ms INTEGER,
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    is_bot INTEGER NOT NULL DEFAULT 0,
+    flags TEXT,                             -- JSON
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_beh_visitor ON behavioral_sessions(visitor_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_beh_bot ON behavioral_sessions(is_bot, created_at);
+
+  -- ───── JA3 Fingerprints ─────
+  CREATE TABLE IF NOT EXISTS ja3_fingerprints (
+    ja3_hash TEXT PRIMARY KEY,
+    ja3_string TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    is_malicious INTEGER NOT NULL DEFAULT 0,
+    notes TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_ja3_mal ON ja3_fingerprints(is_malicious);
+
+  -- ───── Bot Events Log ─────
+  CREATE TABLE IF NOT EXISTS bot_events (
+    id TEXT PRIMARY KEY,
+    visitor_id TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    fingerprint_hash TEXT,
+    path TEXT,
+    event_type TEXT NOT NULL,               -- 'detected' | 'blocked' | 'challenged' | 'verified'
+    risk_score INTEGER NOT NULL,
+    risk_level TEXT NOT NULL,
+    flags TEXT,                             -- JSON
+    details TEXT,                           -- JSON
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_bot_events_visitor ON bot_events(visitor_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_bot_events_time ON bot_events(created_at);
+
+  -- ───── Verified Humans (Challenges) ─────
+  CREATE TABLE IF NOT EXISTS bot_challenges (
+    id TEXT PRIMARY KEY,
+    visitor_id TEXT NOT NULL,
+    challenge_type TEXT NOT NULL,           -- 'pow' | 'captcha' | 'behavioral'
+    challenge_data TEXT,                    -- JSON (برای PoW)
+    solved_at INTEGER,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_bot_chal_visitor ON bot_challenges(visitor_id);
+`);
+```
+
+---
+
+🛡️ server/services/fingerprint.service.ts
+
+```typescript
+import crypto from 'crypto';
+import db from './db.service.js';
+import { BOT_CONFIG } from '../config/botDetection.config.js';
+
+export interface FingerprintComponents {
+  canvas?: string;
+  webgl?: string;
+  audio?: string;
+  fonts?: string[];
+  screen?: { w: number; h: number; colorDepth: number; pixelRatio: number };
+  timezone?: string;
+  language?: string;
+  languages?: string[];
+  platform?: string;
+  hardwareConcurrency?: number;
+  deviceMemory?: number;
+  touchSupport?: boolean;
+  doNotTrack?: string;
+  cookieEnabled?: boolean;
+  pluginsCount?: number;
+  userAgent?: string;
+  [key: string]: any;
+}
+
+export interface FingerprintRow {
+  id: string;
+  visitor_id: string;
+  fingerprint_hash: string;
+  components: string;
+  risk_score: number;
+  risk_level: string;
+  is_bot: number;
+  is_verified: number;
+  first_seen_at: number;
+  last_seen_at: number;
+  seen_count: number;
+  associated_user_ids: string | null;
+  associated_ips: string | null;
+  user_agents: string | null;
+  flags: string | null;
+}
+
+export class FingerprintService {
+  /**
+   * Hash کردن اجزای fingerprint به یک شناسه پایدار
+   */
+  computeHash(components: FingerprintComponents): string {
+    // فقط اجزای پایدار
+    const stable = {
+      canvas: components.canvas,
+      webgl: components.webgl,
+      audio: components.audio,
+      fonts: (components.fonts || []).sort().join(','),
+      screen: components.screen,
+      timezone: components.timezone,
+      platform: components.platform,
+      hardwareConcurrency: components.hardwareConcurrency,
+      deviceMemory: components.deviceMemory,
+      touchSupport: components.touchSupport
+    };
+
+    return crypto
+      .createHash('sha256')
+      .update(JSON.stringify(stable))
+      .digest('hex');
+  }
+
+  /**
+   * ثبت یا به‌روزرسانی fingerprint
+   */
+  upsert(params: {
+    visitorId: string;
+    components: FingerprintComponents;
+    ip: string;
+    userAgent: string;
+    userId?: string;
+    riskScore: number;
+    riskLevel: string;
+    isBot: boolean;
+    flags: string[];
+  }): FingerprintRow {
+    const existing = db.prepare('SELECT * FROM fingerprints WHERE visitor_id = ?')
+      .get(params.visitorId) as FingerprintRow | undefined;
+
+    const hash = this.computeHash(params.components);
+    const now = Date.now();
+
+    if (existing) {
+      // ادغام arrays
+      const ips = this.mergeArray(existing.associated_ips, params.ip);
+      const uas = this.mergeArray(existing.user_agents, params.userAgent);
+      const uids = params.userId
+        ? this.mergeArray(existing.associated_user_ids, params.userId)
+        : existing.associated_user_ids;
+      const flags = this.mergeArray(existing.flags, params.flags);
+
+      // میانگین وزنی risk score
+      const newRisk = Math.max(
+        existing.risk_score,
+        Math.round((existing.risk_score * existing.seen_count + params.riskScore) / (existing.seen_count + 1))
+      );
+
+      db.prepare(`
+        UPDATE fingerprints SET
+          fingerprint_hash = ?,
+          components = ?,
+          risk_score = ?,
+          risk_level = ?,
+          is_bot = ?,
+          last_seen_at = ?,
+          seen_count = seen_count + 1,
+          associated_user_ids = ?,
+          associated_ips = ?,
+          user_agents = ?,
+          flags = ?
+        WHERE visitor_id = ?
+      `).run(
+        hash,
+        JSON.stringify(params.components),
+        newRisk,
+        this.scoreToLevel(newRisk),
+        existing.is_bot || params.isBot ? 1 : 0,
+        now,
+        uids,
+        ips,
+        uas,
+        flags,
+        params.visitorId
+      );
+
+      return db.prepare('SELECT * FROM fingerprints WHERE visitor_id = ?')
+        .get(params.visitorId) as FingerprintRow;
+    }
+
+    // ثبت جدید
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO fingerprints 
+        (id, visitor_id, fingerprint_hash, components, risk_score, risk_level, is_bot, is_verified,
+         first_seen_at, last_seen_at, seen_count, associated_user_ids, associated_ips, user_agents, flags)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, ?, ?, ?, ?)
+    `).run(
+      id,
+      params.visitorId,
+      hash,
+      JSON.stringify(params.components),
+      params.riskScore,
+      params.riskLevel,
+      params.isBot ? 1 : 0,
+      now,
+      now,
+      params.userId ? JSON.stringify([params.userId]) : null,
+      JSON.stringify([params.ip]),
+      JSON.stringify([params.userAgent]),
+      JSON.stringify(params.flags)
+    );
+
+    return db.prepare('SELECT * FROM fingerprints WHERE visitor_id = ?')
+      .get(params.visitorId) as FingerprintRow;
+  }
+
+  /**
+   * آیا این fingerprint قبلاً bot تشخیص داده شده؟
+   */
+  isKnownBot(visitorId: string): boolean {
+    const row = db.prepare('SELECT is_bot FROM fingerprints WHERE visitor_id = ?')
+      .get(visitorId) as { is_bot: number } | undefined;
+    return row?.is_bot === 1;
+  }
+
+  /**
+   * آیا این fingerprint از چند IP مختلف دیده شده؟ (نشانه botnet/farm)
+   */
+  isSharedFingerprint(visitorId: string, threshold = 5): { shared: boolean; ipsCount: number } {
+    const row = db.prepare('SELECT associated_ips FROM fingerprints WHERE visitor_id = ?')
+      .get(visitorId) as { associated_ips: string | null } | undefined;
+    if (!row?.associated_ips) return { shared: false, ipsCount: 0 };
+    const ips = JSON.parse(row.associated_ips) as string[];
+    return { shared: ips.length >= threshold, ipsCount: ips.length };
+  }
+
+  markVerified(visitorId: string) {
+    db.prepare('UPDATE fingerprints SET is_verified = 1 WHERE visitor_id = ?')
+      .run(visitorId);
+  }
+
+  getByVisitor(visitorId: string): FingerprintRow | undefined {
+    return db.prepare('SELECT * FROM fingerprints WHERE visitor_id = ?')
+      .get(visitorId) as FingerprintRow | undefined;
+  }
+
+  getStats() {
+    const total = db.prepare('SELECT COUNT(*) as c FROM fingerprints')
+      .get() as { c: number };
+    const bots = db.prepare('SELECT COUNT(*) as c FROM fingerprints WHERE is_bot = 1')
+      .get() as { c: number };
+    const verified = db.prepare('SELECT COUNT(*) as c FROM fingerprints WHERE is_verified = 1')
+      .get() as { c: number };
+
+    const topRisk = db.prepare(`
+      SELECT visitor_id, risk_score, risk_level, seen_count, associated_ips
+      FROM fingerprints ORDER BY risk_score DESC LIMIT 20
+    `).all();
+
+    return {
+      total: total.c,
+      bots: bots.c,
+      verified: verified.c,
+      humanRate: total.c ? ((total.c - bots.c) / total.c * 100).toFixed(1) : '0',
+      topRisk
+    };
+  }
+
+  private mergeArray(jsonArr: string | null, value: string | string[]): string {
+    const arr: string[] = jsonArr ? JSON.parse(jsonArr) : [];
+    const values = Array.isArray(value) ? value : [value];
+    for (const v of values) {
+      if (v && !arr.includes(v)) arr.push(v);
+    }
+    return JSON.stringify(arr.slice(-50)); // حداکثر 50 تا نگه‌دار
+  }
+
+  private scoreToLevel(score: number): 'low' | 'medium' | 'high' | 'critical' {
+    if (score >= 80) return 'critical';
+    if (score >= 60) return 'high';
+    if (score >= 30) return 'medium';
+    return 'low';
+  }
+}
+
+export const fingerprintService = new FingerprintService();
+```
+
+---
+
+🔐 server/services/ja3.service.ts (TLS Fingerprint)
+
+```typescript
+import crypto from 'crypto';
+import db from './db.service.js';
+import { BOT_CONFIG } from '../config/botDetection.config.js';
+
+/**
+ * JA3 = MD5(SSLVersion,Cipher,SSLExtension,EllipticCurve,EllipticCurvePointFormat)
+ *
+ * در Node.js خالص نمی‌شه JA3 رو مستقیم از socket گرفت.
+ * راهکار: این محاسبه در nginx / Cloudflare انجام می‌شه و در هدر می‌رسه.
+ *
+ * ─── تنظیم nginx ───
+ * map $ssl_protocol $ssl_protocol_num { "TLSv1.3" "772"; ... }
+ * ... (نمونه config پایین توضیح داده شده)
+ *
+ * این سرویس، هدرهای ارسالی از proxy رو parse می‌کنه.
+ */
+export class Ja3Service {
+  /**
+   * استخراج JA3 hash از هدرهای درخواست
+   */
+  extractFromHeaders(headers: Record<string, any>): string | null {
+    // Cloudflare
+    if (headers['cf-ja3-hash']) return headers['cf-ja3-hash'];
+    // nginx با ماژول ja3
+    if (headers['x-ja3-hash']) return headers['x-ja3-hash'];
+    // AWS ALB
+    if (headers['x-amzn-tls-fingerprint']) return headers['x-amzn-tls-fingerprint'];
+    return null;
+  }
+
+  /**
+   * چک کردن JA3 hash در برابر لیست سیاه
+   */
+  check(ja3Hash: string | null): {
+    suspicious: boolean;
+    knownBad: boolean;
+    riskContribution: number;
+    reason?: string;
+  } {
+    if (!ja3Hash) return { suspicious: false, knownBad: false, riskContribution: 0 };
+
+    // در لیست سیاه صریح
+    if (BOT_CONFIG.knownBadJa3.includes(ja3Hash)) {
+      return {
+        suspicious: true,
+        knownBad: true,
+        riskContribution: BOT_CONFIG.riskWeights.knownBotJa3,
+        reason: 'known_bot_ja3'
+      };
+    }
+
+    if (BOT_CONFIG.ja3.blockedHashes.includes(ja3Hash)) {
+      return {
+        suspicious: true,
+        knownBad: true,
+        riskContribution: BOT_CONFIG.riskWeights.knownBotJa3,
+        reason: 'blocked_ja3'
+      };
+    }
+
+    // چک DB برای hash های قبلاً flag شده
+    const row = db.prepare('SELECT is_malicious FROM ja3_fingerprints WHERE ja3_hash = ?')
+      .get(ja3Hash) as { is_malicious: number } | undefined;
+
+    if (row?.is_malicious === 1) {
+      return {
+        suspicious: true,
+        knownBad: true,
+        riskContribution: BOT_CONFIG.riskWeights.knownBotJa3,
+        reason: 'previously_flagged_ja3'
+      };
+    }
+
+    return { suspicious: false, knownBad: false, riskContribution: 0 };
+  }
+
+  /**
+   * ثبت JA3 مشاهده‌شده
+   */
+  record(ja3Hash: string, ja3String: string | null, ip: string, userAgent: string) {
+    const now = Date.now();
+    const existing = db.prepare('SELECT * FROM ja3_fingerprints WHERE ja3_hash = ?')
+      .get(ja3Hash) as any;
+
+    if (existing) {
+      db.prepare(`
+        UPDATE ja3_fingerprints SET
+          last_seen_at = ?, seen_count = seen_count + 1, ip_address = ?, user_agent = ?
+        WHERE ja3_hash = ?
+      `).run(now, ip, userAgent, ja3Hash);
+    } else {
+      db.prepare(`
+        INSERT INTO ja3_fingerprints 
+          (ja3_hash, ja3_string, ip_address, user_agent, first_seen_at, last_seen_at, seen_count)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+      `).run(ja3Hash, ja3String, ip, userAgent, now, now);
+    }
+  }
+
+  markMalicious(ja3Hash: string, notes?: string) {
+    db.prepare(`
+      UPDATE ja3_fingerprints SET is_malicious = 1, notes = ? WHERE ja3_hash = ?
+    `).run(notes || null, ja3Hash);
+  }
+
+  getStats() {
+    return db.prepare(`
+      SELECT ja3_hash, seen_count, is_malicious, last_seen_at,
+             (SELECT COUNT(DISTINCT ip_address) FROM ja3_fingerprints f2 WHERE f2.ja3_hash = f.ja3_hash) as ip_count
+      FROM ja3_fingerprints f
+      ORDER BY seen_count DESC LIMIT 30
+    `).all();
+  }
+}
+
+export const ja3Service = new Ja3Service();
+```
+
+---
+
+🧠 server/services/botDetection.service.ts — هسته اصلی
+
+```typescript
+import crypto from 'crypto';
+import { UAParser } from 'ua-parser-js';
+import { BOT_CONFIG } from '../config/botDetection.config.js';
+import { fingerprintService, FingerprintComponents } from './fingerprint.service.js';
+import { ja3Service } from './ja3.service.js';
+import db from './db.service.js';
+
+// ═══════════════════════════════════════════
+//  Types
+// ═══════════════════════════════════════════
+export interface BehavioralData {
+  pageDwellMs?: number;
+  mouseEvents?: number;
+  mouseDistance?: number;
+  mouseAvgSpeed?: number;
+  mouseMaxSpeed?: number;
+  mouseLinearity?: number;        // 0-1
+  keystrokes?: number;
+  keystrokeVariance?: number;
+  scrollEvents?: number;
+  touchEvents?: number;
+  focusBlurCount?: number;
+  copyPasteCount?: number;
+  tabSwitches?: number;
+  formFillTimeMs?: number;
+  timeToFirstInteractionMs?: number;
+  // ───── headless signals ─────
+  webdriver?: boolean;
+  pluginsCount?: number;
+  languagesCount?: number;
+  hasChrome?: boolean;
+  hasPhantom?: boolean;
+}
+
+export interface BotDetectionInput {
+  visitorId: string;
+  components: FingerprintComponents;
+  behavioral: BehavioralData;
+  ip: string;
+  userAgent: string;
+  userId?: string;
+  headers: Record<string, any>;
+}
+
+export interface BotDetectionResult {
+  visitorId: string;
+  fingerprintHash: string;
+  riskScore: number;
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  isBot: boolean;
+  isHeadless: boolean;
+  flags: string[];
+  reasons: string[];
+  action: 'allow' | 'challenge' | 'block';
+  cached: boolean;
+}
+
+interface CacheEntry {
+  result: BotDetectionResult;
+  expiresAt: number;
+}
+
+// ═══════════════════════════════════════════
+//  Service
+// ═══════════════════════════════════════════
+export class BotDetectionService {
+  private cache = new Map<string, CacheEntry>();
+
+  // ═══════════════════════════════════════════
+  //  Main Check
+  // ═══════════════════════════════════════════
+  async detect(input: BotDetectionInput): Promise<BotDetectionResult> {
+    const cacheKey = `${input.visitorId}:${input.ip}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return { ...cached.result, cached: true };
+    }
+
+    const result = await this.analyze(input);
+
+    this.cache.set(cacheKey, {
+      result,
+      expiresAt: Date.now() + 60_000 // 1 دقیقه کش (کوتاه، چون رفتار تغییر می‌کنه)
+    });
+
+    return result;
+  }
+
+  private async analyze(input: BotDetectionInput): Promise<BotDetectionResult> {
+    const flags: string[] = [];
+    const reasons: string[] = [];
+    const W = BOT_CONFIG.riskWeights;
+    let score = 0;
+
+    // ═══════════════════════════════════════════
+    //  1. User-Agent Analysis
+    // ═══════════════════════════════════════════
+    const ua = input.userAgent || '';
+    const uaParsed = new UAParser(ua).getResult();
+
+    for (const pattern of BOT_CONFIG.botUserAgents) {
+      if (pattern.test(ua)) {
+        flags.push('bot_ua');
+        reasons.push(`bot_user_agent_pattern:${pattern.source}`);
+        score += W.headlessUA;
+        break;
+      }
+    }
+
+    // UA خالی یا مشکوک
+    if (!ua || ua.length < 15) {
+      flags.push('missing_ua');
+      score += 20;
+    }
+
+    // آیا ادعای Chrome داره ولی bot هست؟
+    if (/chrome/i.test(ua) && !uaParsed.browser.version) {
+      flags.push('fake_chrome');
+      score += 15;
+    }
+
+    // ═══════════════════════════════════════════
+    //  2. Headless Detection
+    // ═══════════════════════════════════════════
+    const b = input.behavioral;
+
+    if (b.webdriver) {
+      flags.push('webdriver_flag');
+      reasons.push('navigator.webdriver=true');
+      score += W.webdriverFlag;
+    }
+
+    if (b.hasPhantom) {
+      flags.push('phantom_detected');
+      reasons.push('window._phantom or window.callPhantom');
+      score += W.phantomProps;
+    }
+
+    if (b.pluginsCount === 0 && /chrome|firefox/i.test(ua)) {
+      flags.push('no_plugins');
+      score += W.missingPlugins;
+    }
+
+    if (b.languagesCount === 0) {
+      flags.push('no_languages');
+      score += W.noLanguages;
+    }
+
+    if (b.hasChrome === false && /chrome/i.test(ua)) {
+      flags.push('chrome_obj_missing');
+      score += W.zeroChromeObj;
+    }
+
+    // ═══════════════════════════════════════════
+    //  3. Header Analysis
+    // ═══════════════════════════════════════════
+    for (const h of BOT_CONFIG.suspiciousHeaders) {
+      if (input.headers[h]) {
+        flags.push('automation_header');
+        reasons.push(`suspicious_header:${h}`);
+        score += W.automationHeaders;
+        break;
+      }
+    }
+
+    if (!input.headers['accept-language']) {
+      flags.push('no_accept_language');
+      score += W.missingAcceptLanguage;
+    }
+
+    // ═══════════════════════════════════════════
+    //  4. JA3 / TLS Fingerprint
+    // ═══════════════════════════════════════════
+    const ja3Hash = ja3Service.extractFromHeaders(input.headers);
+    if (ja3Hash) {
+      ja3Service.record(ja3Hash, null, input.ip, ua);
+      const ja3Check = ja3Service.check(ja3Hash);
+      if (ja3Check.suspicious) {
+        flags.push('suspicious_ja3');
+        reasons.push(`ja3:${ja3Check.reason}`);
+        score += ja3Check.riskContribution;
+      }
+    }
+
+    // ═══════════════════════════════════════════
+    //  5. Behavioral Analysis
+    // ═══════════════════════════════════════════
+    if (b.pageDwellMs !== undefined && b.pageDwellMs < BOT_CONFIG.behavioral.minPageDwellMs) {
+      flags.push('fast_dwell');
+      reasons.push(`page_dwell_ms:${b.pageDwellMs}`);
+      score += W.tooFastFormFill;
+    }
+
+    if (b.mouseEvents !== undefined && b.mouseEvents < BOT_CONFIG.behavioral.minMouseEvents) {
+      flags.push('low_mouse_activity');
+      reasons.push(`mouse_events:${b.mouseEvents}`);
+      score += W.noMouseMovement;
+    }
+
+    if (b.mouseMaxSpeed !== undefined && b.mouseMaxSpeed > BOT_CONFIG.behavioral.maxMouseSpeed) {
+      flags.push('superhuman_mouse');
+      reasons.push(`mouse_max_speed:${b.mouseMaxSpeed}`);
+      score += W.superhumanMouseSpeed;
+    }
+
+    if (b.mouseLinearity !== undefined && b.mouseLinearity > 0.98 && (b.mouseDistance || 0) > 500) {
+      flags.push('linear_mouse');
+      reasons.push(`mouse_linearity:${b.mouseLinearity}`);
+      score += W.linearMouseMovement;
+    }
+
+    if (b.keystrokes !== undefined && b.keystrokes > 0 &&
+        b.keystrokeVariance !== undefined && b.keystrokeVariance < 5) {
+      flags.push('perfect_keystroke_timing');
+      reasons.push(`keystroke_variance:${b.keystrokeVariance}`);
+      score += W.perfectTiming;
+    }
+
+    if (b.formFillTimeMs !== undefined && b.formFillTimeMs < 2000 && b.keystrokes !== undefined && b.keystrokes > 5) {
+      flags.push('too_fast_form');
+      reasons.push(`form_fill_ms:${b.formFillTimeMs}`);
+      score += W.tooFastFormFill;
+    }
+
+    // ═══════════════════════════════════════════
+    //  6. Fingerprint Analysis
+    // ═══════════════════════════════════════════
+    const components = input.components;
+
+    if (!components.canvas && !components.webgl) {
+      flags.push('empty_fingerprint');
+      score += W.emptyFingerprint;
+    }
+
+    // چک تکرار fingerprint
+    const fpCheck = fingerprintService.isSharedFingerprint(input.visitorId, 5);
+    if (fpCheck.shared) {
+      flags.push('shared_fingerprint');
+      reasons.push(`fingerprint_seen_from_${fpCheck.ipsCount}_ips`);
+      score += W.duplicateFingerprint;
+    }
+
+    // آیا قبلاً bot تشخیص داده شده؟
+    if (fingerprintService.isKnownBot(input.visitorId)) {
+      flags.push('known_bot');
+      score += W.knownBotFingerprint;
+    }
+
+    // ═══════════════════════════════════════════
+    //  7. Compute Final
+    // ═══════════════════════════════════════════
+    score = Math.min(100, score);
+    const riskLevel = this.scoreToLevel(score);
+    const isBot = score >= BOT_CONFIG.riskThreshold;
+    const isHeadless = flags.some(f =>
+      ['webdriver_flag', 'phantom_detected', 'headless_ua', 'bot_ua'].includes(f)
+    );
+
+    // ذخیره fingerprint
+    const fpHash = fingerprintService.computeHash(components);
+    fingerprintService.upsert({
+      visitorId: input.visitorId,
+      components,
+      ip: input.ip,
+      userAgent: ua,
+      userId: input.userId,
+      riskScore: score,
+      riskLevel,
+      isBot,
+      flags
+    });
+
+    // ذخیره behavioral session
+    this.saveBehavioralSession({
+      visitorId: input.visitorId,
+      ip: input.ip,
+      userId: input.userId,
+      behavioral: b,
+      riskScore: score,
+      isBot,
+      flags
+    });
+
+    // تعیین action
+    let action: 'allow' | 'challenge' | 'block' = 'allow';
+    if (isBot) {
+      action = BOT_CONFIG.action === 'block' ? 'block'
+             : BOT_CONFIG.action === 'challenge' ? 'challenge'
+             : 'allow';
+    }
+
+    // لاگ رویداد
+    this.logEvent({
+      visitorId: input.visitorId,
+      ip: input.ip,
+      userAgent: ua,
+      fingerprintHash: fpHash,
+      eventType: isBot ? 'detected' : 'allowed',
+      riskScore: score,
+      riskLevel,
+      flags,
+      details: { reasons, behavioral: b }
+    });
+
+    return {
+      visitorId: input.visitorId,
+      fingerprintHash: fpHash,
+      riskScore: score,
+      riskLevel,
+      isBot,
+      isHeadless,
+      flags,
+      reasons,
+      action,
+      cached: false
+    };
+  }
+
+  // ═══════════════════════════════════════════
+  //  Helpers
+  // ═══════════════════════════════════════════
+  private scoreToLevel(score: number): 'low' | 'medium' | 'high' | 'critical' {
+    if (score >= 80) return 'critical';
+    if (score >= 60) return 'high';
+    if (score >= 30) return 'medium';
+    return 'low';
+  }
+
+  private saveBehavioralSession(params: {
+    visitorId: string;
+    ip: string;
+    userId?: string;
+    behavioral: BehavioralData;
+    riskScore: number;
+    isBot: boolean;
+    flags: string[];
+  }) {
+    const b = params.behavioral;
+    db.prepare(`
+      INSERT INTO behavioral_sessions 
+        (id, visitor_id, ip_address, user_id, page_dwell_ms, mouse_events, mouse_distance,
+         mouse_avg_speed, mouse_max_speed, mouse_linearity, keystrokes, keystroke_variance,
+         scroll_events, touch_events, focus_blur_count, copy_paste_count, tab_switches,
+         form_fill_time_ms, time_to_first_interaction_ms, risk_score, is_bot, flags, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      params.visitorId,
+      params.ip,
+      params.userId || null,
+      b.pageDwellMs || null,
+      b.mouseEvents || 0,
+      b.mouseDistance || 0,
+      b.mouseAvgSpeed || 0,
+      b.mouseMaxSpeed || 0,
+      b.mouseLinearity || null,
+      b.keystrokes || 0,
+      b.keystrokeVariance || null,
+      b.scrollEvents || 0,
+      b.touchEvents || 0,
+      b.focusBlurCount || 0,
+      b.copyPasteCount || 0,
+      b.tabSwitches || 0,
+      b.formFillTimeMs || null,
+      b.timeToFirstInteractionMs || null,
+      params.riskScore,
+      params.isBot ? 1 : 0,
+      JSON.stringify(params.flags),
+      Date.now()
+    );
+  }
+
+  private logEvent(params: {
+    visitorId?: string;
+    ip?: string;
+    userAgent?: string;
+    fingerprintHash?: string;
+    path?: string;
+    eventType: string;
+    riskScore: number;
+    riskLevel: string;
+    flags: string[];
+    details?: any;
+  }) {
+    db.prepare(`
+      INSERT INTO bot_events 
+        (id, visitor_id, ip_address, user_agent, fingerprint_hash, path, event_type,
+         risk_score, risk_level, flags, details, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      params.visitorId || null,
+      params.ip || null,
+      params.userAgent || null,
+      params.fingerprintHash || null,
+      params.path || null,
+      params.eventType,
+      params.riskScore,
+      params.riskLevel,
+      JSON.stringify(params.flags),
+      params.details ? JSON.stringify(params.details) : null,
+      Date.now()
+    );
+  }
+
+  // ═══════════════════════════════════════════
+  //  Challenge (PoW + CAPTCHA)
+  // ═══════════════════════════════════════════
+
+  /**
+   * تولید یک challenge ساده Proof-of-Work برای اثبات انسانی‌بودن
+   */
+  createPowChallenge(visitorId: string) {
+    const id = crypto.randomUUID();
+    const challenge = crypto.randomBytes(16).toString('hex');
+    const difficulty = 4; // 4 hex zeros
+    const expiresAt = Date.now() + 5 * 60 * 1000;
+
+    db.prepare(`
+      INSERT INTO bot_challenges 
+        (id, visitor_id, challenge_type, challenge_data, expires_at, created_at)
+      VALUES (?, ?, 'pow', ?, ?, ?)
+    `).run(
+      id,
+      visitorId,
+      JSON.stringify({ challenge, difficulty }),
+      expiresAt,
+      Date.now()
+    );
+
+    return { id, challenge, difficulty, expiresAt };
+  }
+
+  /**
+   * بررسی حل PoW
+   * کلاینت باید nonce پیدا کنه که SHA256(challenge + nonce) با N صفر شروع بشه
+   */
+  verifyPow(visitorId: string, challengeId: string, nonce: string): boolean {
+    const row = db.prepare(`
+      SELECT * FROM bot_challenges 
+      WHERE id = ? AND visitor_id = ? AND challenge_type = 'pow' AND solved_at IS NULL
+    `).get(challengeId, visitorId) as any;
+
+    if (!row) return false;
+    if (row.expires_at < Date.now()) return false;
+
+    const data = JSON.parse(row.challenge_data);
+    const hash = crypto
+      .createHash('sha256')
+      .update(data.challenge + nonce)
+      .digest('hex');
+
+    const target = '0'.repeat(data.difficulty);
+    if (!hash.startsWith(target)) {
+      db.prepare('UPDATE bot_challenges SET attempts = attempts + 1 WHERE id = ?').run(challengeId);
+      return false;
+    }
+
+    db.prepare('UPDATE bot_challenges SET solved_at = ? WHERE id = ?').run(Date.now(), challengeId);
+    fingerprintService.markVerified(visitorId);
+
+    this.logEvent({
+      visitorId,
+      eventType: 'verified',
+      riskScore: 0,
+      riskLevel: 'low',
+      flags: ['pow_solved']
+    });
+
+    return true;
+  }
+
+  // ═══════════════════════════════════════════
+  //  Stats & Admin
+  // ═══════════════════════════════════════════
+  getStats() {
+    const fpStats = fingerprintService.getStats();
+
+    const events = db.prepare(`
+      SELECT event_type, COUNT(*) as count 
+      FROM bot_events 
+      WHERE created_at > ? 
+      GROUP BY event_type
+    `).all(Date.now() - 24 * 60 * 60 * 1000);
+
+    const recentBotIps = db.prepare(`
+      SELECT ip_address, COUNT(*) as hits, AVG(risk_score) as avg_risk
+      FROM bot_events
+      WHERE is_bot_marker = 1 OR event_type = 'detected'
+      GROUP BY ip_address
+      ORDER BY hits DESC LIMIT 20
+    `).all().catch(() => []);
+
+    const topFingerprints = db.prepare(`
+      SELECT visitor_id, risk_score, risk_level, is_bot, seen_count, associated_ips
+      FROM fingerprints
+      WHERE is_bot = 1
+      ORDER BY risk_score DESC LIMIT 20
+    `).all();
+
+    const recentEvents = db.prepare(`
+      SELECT * FROM bot_events 
+      WHERE event_type IN ('detected', 'blocked', 'challenged')
+      ORDER BY created_at DESC LIMIT 50
+    `).all();
+
+    return {
+      fingerprints: fpStats,
+      events24h: events,
+      recentEvents,
+      topFingerprints,
+      recentBotIps
+    };
+  }
+
+  clearCache() { this.cache.clear(); }
+}
+
+export const botDetectionService = new BotDetectionService();
+```
+
+---
+
+🛡️ server/middleware/botDetection.middleware.ts
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { botDetectionService } from '../services/botDetection.service.js';
+import { BOT_CONFIG } from '../config/botDetection.config.js';
+import { securityService } from '../services/security.service.js';
+
+declare global {
+  namespace Express {
+    interface Request {
+      botDetection?: any;
+    }
+  }
+}
+
+/**
+ * Middleware اصلی که کلاینت fingerprint + behavioral داده‌ها رو در body یا headers می‌فرسته.
+ * اگر داده نباشه → امتیاز بر اساس UA/headers محاسبه می‌شه.
+ */
+export async function botDetectionGuard(req: Request, res: Response, next: NextFunction) {
+  if (!BOT_CONFIG.enabled) return next();
+
+  const ip = req.ip || 'unknown';
+  const userAgent = req.headers['user-agent'] || '';
+
+  // استخراج fingerprint از body یا header
+  const visitorId = 
+    req.body?.__visitorId || 
+    req.headers['x-visitor-id'] as string ||
+    null;
+
+  // اگر visitorId نداریم، اجازه بدیم ولی flag کنیم
+  if (!visitorId) {
+    // UA-based only fallback
+    const uaResult = await botDetectionService.detect({
+      visitorId: 'anonymous:' + ip,
+      components: {},
+      behavioral: {},
+      ip,
+      userAgent,
+      userId: (req as any).user?.sub,
+      headers: req.headers as any
+    });
+    (req as any).botDetection = uaResult;
+    if (uaResult.action === 'block') {
+      return res.status(403).json({
+        success: false,
+        code: 'BOT_BLOCKED',
+        error: 'Access denied',
+        riskScore: uaResult.riskScore
+      });
+    }
+    if (uaResult.action === 'challenge') {
+      return res.status(403).json({
+        success: false,
+        code: 'BOT_CHALLENGE',
+        error: 'Verification required',
+        riskScore: uaResult.riskScore
+      });
+    }
+    return next();
+  }
+
+  const components = req.body?.__fp || {};
+  const behavioral = req.body?.__behavior || {};
+
+  try {
+    const result = await botDetectionService.detect({
+      visitorId,
+      components,
+      behavioral,
+      ip,
+      userAgent,
+      userId: (req as any).user?.sub,
+      headers: req.headers as any
+    });
+
+    req.botDetection = result;
+
+    if (result.riskScore >= 30) {
+      securityService.logSuspicious({
+        userId: (req as any).user?.sub,
+        ipAddress: ip,
+        userAgent,
+        activityType: 'bot_suspected',
+        severity: result.riskLevel === 'critical' || result.riskLevel === 'high' ? 'high' : 'medium',
+        details: {
+          riskScore: result.riskScore,
+          flags: result.flags,
+          reasons: result.reasons
+        }
+      });
+    }
+
+    if (result.action === 'block') {
+      return res.status(403).json({
+        success: false,
+        code: 'BOT_BLOCKED',
+        error: 'Access denied',
+        riskScore: result.riskScore,
+        riskLevel: result.riskLevel
+      });
+    }
+
+    if (result.action === 'challenge') {
+      // اگر verified هست، اجازه بده
+      if (!result.isBot || result.flags.includes('known_bot') === false && result.riskScore < BOT_CONFIG.riskThreshold) {
+        return next();
+      }
+      return res.status(403).json({
+        success: false,
+        code: 'BOT_CHALLENGE',
+        error: 'Please complete verification',
+        riskScore: result.riskScore,
+        riskLevel: result.riskLevel,
+        challenge: botDetectionService.createPowChallenge(visitorId)
+      });
+    }
+
+    next();
+  } catch (err) {
+    console.error('[BotDetection] Error:', err);
+    next(); // fail-open
+  }
+}
+
+/**
+ * نسخه سبک — فقط attach می‌کنه
+ */
+export async function attachBotProfile(req: Request, _res: Response, next: NextFunction) {
+  if (!BOT_CONFIG.enabled) return next();
+  const visitorId = req.body?.__visitorId || req.headers['x-visitor-id'];
+  if (!visitorId) return next();
+  try {
+    req.botDetection = await botDetectionService.detect({
+      visitorId: String(visitorId),
+      components: req.body?.__fp || {},
+      behavioral: req.body?.__behavior || {},
+      ip: req.ip || 'unknown',
+      userAgent: req.headers['user-agent'] || '',
+      userId: (req as any).user?.sub,
+      headers: req.headers as any
+    });
+  } catch {}
+  next();
+}
+```
+
+---
+
+🛣️ server/routes/bot.routes.ts
+
+```typescript
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { botDetectionService } from '../services/botDetection.service.js';
+import { fingerprintService } from '../services/fingerprint.service.js';
+import { ja3Service } from '../services/ja3.service.js';
+import { BOT_CONFIG } from '../config/botDetection.config.js';
+
+const router = Router();
+
+// ───── عمومی: verify PoW challenge ─────
+router.post('/verify-pow', (req, res, next) => {
+  try {
+    const schema = z.object({
+      visitorId: z.string(),
+      challengeId: z.string(),
+      nonce: z.string()
+    });
+    const { visitorId, challengeId, nonce } = schema.parse(req.body);
+    const ok = botDetectionService.verifyPow(visitorId, challengeId, nonce);
+    res.json({ success: ok, data: { verified: ok } });
+  } catch (err) { next(err); }
+});
+
+// ───── ادمین ─────
+router.use(requireAuth, requireRole('admin'));
+
+router.get('/stats', (_req, res) => {
+  res.json({ success: true, data: botDetectionService.getStats() });
+});
+
+router.get('/config', (_req, res) => {
+  res.json({
+    success: true,
+    data: {
+      enabled: BOT_CONFIG.enabled,
+      action: BOT_CONFIG.action,
+      riskThreshold: BOT_CONFIG.riskThreshold,
+      riskWeights: BOT_CONFIG.riskWeights,
+      knownBadJa3: BOT_CONFIG.knownBadJa3
+    }
+  });
+});
+
+router.get('/fingerprints', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  const filter = req.query.filter as string;
+  
+  let query = 'SELECT * FROM fingerprints ORDER BY last_seen_at DESC LIMIT ?';
+  if (filter === 'bots') query = 'SELECT * FROM fingerprints WHERE is_bot = 1 ORDER BY risk_score DESC LIMIT ?';
+  if (filter === 'high-risk') query = 'SELECT * FROM fingerprints WHERE risk_score >= 60 ORDER BY risk_score DESC LIMIT ?';
+  
+  const rows = (require('../services/db.service.js').default).prepare(query).all(limit);
+  res.json({ success: true, data: rows });
+});
+
+router.get('/fingerprint/:visitorId', (req, res) => {
+  const fp = fingerprintService.getByVisitor(req.params.visitorId);
+  if (!fp) return res.status(404).json({ success: false, error: 'Not found' });
+  res.json({ success: true, data: { ...fp, components: JSON.parse(fp.components) } });
+});
+
+router.post('/fingerprint/:visitorId/verify', (req, res) => {
+  fingerprintService.markVerified(req.params.visitorId);
+  res.json({ success: true });
+});
+
+router.get('/ja3', (_req, res) => {
+  res.json({ success: true, data: ja3Service.getStats() });
+});
+
+router.post('/ja3/:hash/mark-bad', (req, res) => {
+  ja3Service.markMalicious(req.params.hash, req.body?.notes);
+  res.json({ success: true });
+});
+
+router.post('/cache/clear', (_req, res) => {
+  botDetectionService.clearCache();
+  res.json({ success: true });
+});
+
+export default router;
+```
+
+---
+
+🖥️ src/fingerprint/FingerprintCollector.ts — کلاینت
+
+```typescript
+/**
+ * جمع‌آوری جامع fingerprint از مرورگر
+ * بدون کتابخانه خارجی، سبک و سریع
+ */
+export interface CollectedFingerprint {
+  canvas?: string;
+  webgl?: string;
+  audio?: string;
+  fonts?: string[];
+  screen?: { w: number; h: number; colorDepth: number; pixelRatio: number };
+  timezone?: string;
+  language?: string;
+  languages?: string[];
+  platform?: string;
+  hardwareConcurrency?: number;
+  deviceMemory?: number;
+  touchSupport?: boolean;
+  doNotTrack?: string;
+  cookieEnabled?: boolean;
+  pluginsCount?: number;
+  userAgent?: string;
+  // ───── bot signals ─────
+  webdriver?: boolean;
+  hasChrome?: boolean;
+  hasPhantom?: boolean;
+  headlessHints?: string[];
+}
+
+export class FingerprintCollector {
+  async collect(): Promise<CollectedFingerprint> {
+    const fp: CollectedFingerprint = {};
+
+    fp.canvas = this.canvasFingerprint();
+    fp.webgl = this.webglFingerprint();
+    fp.audio = await this.audioFingerprint();
+    fp.fonts = this.fontFingerprint();
+    fp.screen = {
+      w: window.screen.width,
+      h: window.screen.height,
+      colorDepth: window.screen.colorDepth,
+      pixelRatio: window.devicePixelRatio
+    };
+    fp.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    fp.language = navigator.language;
+    fp.languages = [...(navigator.languages || [])];
+    fp.platform = navigator.platform;
+    fp.hardwareConcurrency = navigator.hardwareConcurrency;
+    fp.deviceMemory = (navigator as any).deviceMemory;
+    fp.touchSupport = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    fp.doNotTrack = navigator.doNotTrack || undefined;
+    fp.cookieEnabled = navigator.cookieEnabled;
+    fp.pluginsCount = navigator.plugins?.length || 0;
+    fp.userAgent = navigator.userAgent;
+
+    // ───── Bot signals ─────
+    fp.webdriver = navigator.webdriver === true;
+    fp.hasChrome = typeof (window as any).chrome !== 'undefined';
+    fp.hasPhantom = typeof (window as any)._phantom !== 'undefined' ||
+                    typeof (window as any).callPhantom !== 'undefined' ||
+                    typeof (window as any).__nightmare !== 'undefined';
+
+    // headless hints
+    const hints: string[] = [];
+    if (navigator.plugins.length === 0 && /chrome/i.test(navigator.userAgent)) {
+      hints.push('no_plugins');
+    }
+    if ((navigator.languages || []).length === 0) {
+      hints.push('no_languages');
+    }
+    if (!(window as any).chrome && /chrome/i.test(navigator.userAgent)) {
+      hints.push('chrome_missing');
+    }
+    // Notification permission در headless معمولاً denied هست
+    if (typeof Notification !== 'undefined' && Notification.permission === 'denied' && navigator.webdriver) {
+      hints.push('denied_notification');
+    }
+    fp.headlessHints = hints;
+
+    return fp;
+  }
+
+  // ═══════════════════════════════════════════
+  //  Canvas
+  // ═══════════════════════════════════════════
+  private canvasFingerprint(): string {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 200;
+      canvas.height = 60;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return 'no-ctx';
+
+      ctx.textBaseline = 'top';
+      ctx.font = '14px Arial';
+      ctx.fillStyle = '#f60';
+      ctx.fillRect(125, 1, 62, 20);
+      ctx.fillStyle = '#069';
+      ctx.fillText('APZ Wallet 🔐', 2, 15);
+      ctx.fillStyle = 'rgba(102,204,0,0.7)';
+      ctx.fillText('APZ Wallet 🔐', 4, 17);
+
+      return canvas.toDataURL();
+    } catch {
+      return 'error';
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  //  WebGL
+  // ═══════════════════════════════════════════
+  private webglFingerprint(): string {
+    try {
+      const canvas = document.createElement('canvas');
+      const gl = (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')) as WebGLRenderingContext | null;
+      if (!gl) return 'no-webgl';
+
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      const vendor = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+      const renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+
+      return `${vendor}|${renderer}`;
+    } catch {
+      return 'error';
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  //  Audio
+  // ═══════════════════════════════════════════
+  private async audioFingerprint(): Promise<string> {
+    try {
+      const AudioContext = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContext) return 'no-audio';
+
+      const ctx = new AudioContext();
+      const oscillator = ctx.createOscillator();
+      const analyser = ctx.createAnalyser();
+      const gain = ctx.createGain();
+      const dest = ctx.createMediaStreamDestination();
+
+      oscillator.type = 'triangle';
+      oscillator.frequency.value = 10000;
+      gain.gain.value = 0;
+
+      oscillator.connect(analyser);
+      analyser.connect(gain);
+      gain.connect(dest);
+      gain.connect(ctx.destination);
+
+      oscillator.start(0);
+
+      return new Promise(resolve => {
+        setTimeout(() => {
+          try {
+            const data = new Float32Array(analyser.frequencyBinCount);
+            analyser.getFloatFrequencyData(data);
+            const sum = data.reduce((a, b) => a + (isFinite(b) ? b : 0), 0);
+            oscillator.stop();
+            ctx.close();
+            resolve(sum.toString());
+          } catch {
+            resolve('error');
+          }
+        }, 100);
+      });
+    } catch {
+      return 'error';
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  //  Fonts
+  // ═══════════════════════════════════════════
+  private fontFingerprint(): string[] {
+    try {
+      const baseFonts = ['monospace', 'sans-serif', 'serif'];
+      const testFonts = [
+        'Arial', 'Verdana', 'Times New Roman', 'Courier New',
+        'Georgia', 'Comic Sans MS', 'Trebuchet MS', 'Impact',
+        'Tahoma', 'Vazirmatn', 'IRANSans', 'Iranian Sans'
+      ];
+      const testString = 'mmmmmmmmmmlli';
+      const testSize = '72px';
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return [];
+
+      const getWidth = (font: string) => {
+        ctx.font = `${testSize} ${font}`;
+        return ctx.measureText(testString).width;
+      };
+
+      const baseWidths: Record<string, number> = {};
+      for (const base of baseFonts) baseWidths[base] = getWidth(base);
+
+      const detected: string[] = [];
+      for (const font of testFonts) {
+        let detectedFont = false;
+        for (const base of baseFonts) {
+          const width = getWidth(`"${font}",${base}`);
+          if (width !== baseWidths[base]) {
+            detectedFont = true;
+            break;
+          }
+        }
+        if (detectedFont) detected.push(font);
+      }
+      return detected;
+    } catch {
+      return [];
+    }
+  }
+}
+
+// ───── singleton ─────
+let collected: CollectedFingerprint | null = null;
+
+export async function getFingerprint(): Promise<CollectedFingerprint> {
+  if (collected) return collected;
+  const collector = new FingerprintCollector();
+  collected = await collector.collect();
+  return collected;
+}
+```
+
+---
+
+🧠 src/fingerprint/behavioralTracker.ts — کلاینت
+
+```typescript
+export interface BehavioralData {
+  pageDwellMs: number;
+  mouseEvents: number;
+  mouseDistance: number;
+  mouseAvgSpeed: number;
+  mouseMaxSpeed: number;
+  mouseLinearity: number;
+  keystrokes: number;
+  keystrokeVariance: number;
+  scrollEvents: number;
+  touchEvents: number;
+  focusBlurCount: number;
+  copyPasteCount: number;
+  tabSwitches: number;
+  timeToFirstInteractionMs: number | null;
+}
+
+export class BehavioralTracker {
+  private startTime = Date.now();
+  private firstInteraction: number | null = null;
+
+  private mousePositions: { x: number; y: number; t: number }[] = [];
+  private keystrokeTimes: number[] = [];
+  private scrollCount = 0;
+  private touchCount = 0;
+  private focusBlurCount = 0;
+  private copyPasteCount = 0;
+  private tabSwitches = 0;
+
+  private listeners: Array<() => void> = [];
+
+  start() {
+    const onMouseMove = (e: MouseEvent) => {
+      this.markFirstInteraction();
+      this.mousePositions.push({ x: e.clientX, y: e.clientY, t: performance.now() });
+      // حداکثر 500 نقطه نگه‌دار
+      if (this.mousePositions.length > 500) this.mousePositions.shift();
+    };
+
+    const onKeyDown = () => {
+      this.markFirstInteraction();
+      this.keystrokeTimes.push(performance.now());
+      if (this.keystrokeTimes.length > 200) this.keystrokeTimes.shift();
+    };
+
+    const onScroll = () => { this.markFirstInteraction(); this.scrollCount++; };
+    const onTouch = () => { this.markFirstInteraction(); this.touchCount++; };
+    const onFocus = () => { this.focusBlurCount++; };
+    const onBlur = () => { this.focusBlurCount++; };
+    const onCopy = () => { this.copyPasteCount++; };
+    const onPaste = () => { this.copyPasteCount++; };
+    const onVisibility = () => {
+      if (document.hidden) this.tabSwitches++;
+    };
+
+    window.addEventListener('mousemove', onMouseMove, { passive: true });
+    window.addEventListener('keydown', onKeyDown, { passive: true });
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('touchstart', onTouch, { passive: true });
+    window.addEventListener('focus', onFocus, { passive: true });
+    window.addEventListener('blur', onBlur, { passive: true });
+    document.addEventListener('copy', onCopy);
+    document.addEventListener('paste', onPaste);
+    document.addEventListener('visibilitychange', onVisibility);
+
+    this.listeners = [
+      () => window.removeEventListener('mousemove', onMouseMove),
+      () => window.removeEventListener('keydown', onKeyDown),
+      () => window.removeEventListener('scroll', onScroll),
+      () => window.removeEventListener('touchstart', onTouch),
+      () => window.removeEventListener('focus', onFocus),
+      () => window.removeEventListener('blur', onBlur),
+      () => document.removeEventListener('copy', onCopy),
+      () => document.removeEventListener('paste', onPaste),
+      () => document.removeEventListener('visibilitychange', onVisibility)
+    ];
+  }
+
+  private markFirstInteraction() {
+    if (!this.firstInteraction) this.firstInteraction = performance.now();
+  }
+
+  collect(): BehavioralData {
+    const dwell = Date.now() - this.startTime;
+
+    // ───── Mouse analysis ─────
+    const positions = this.mousePositions;
+    let distance = 0;
+    let maxSpeed = 0;
+    const speeds: number[] = [];
+
+    for (let i = 1; i < positions.length; i++) {
+      const p = positions[i - 1];
+      const q = positions[i];
+      const d = Math.hypot(q.x - p.x, q.y - p.y);
+      const dt = (q.t - p.t) / 1000;
+      distance += d;
+      if (dt > 0) {
+        const s = d / dt;
+        speeds.push(s);
+        if (s > maxSpeed) maxSpeed = s;
+      }
+    }
+
+    const avgSpeed = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0;
+
+    // ───── Linearity: چقدر مسیر مستقیمه (0-1)
+    let linearity = 0;
+    if (positions.length >= 3) {
+      // نسبت فاصله اولین تا آخرین نقطه، به مجموع مسیر طی‌شده
+      const first = positions[0];
+      const last = positions[positions.length - 1];
+      const straightDist = Math.hypot(last.x - first.x, last.y - first.y);
+      linearity = distance > 0 ? straightDist / distance : 0;
+    }
+
+    // ───── Keystroke variance ─────
+    let keystrokeVariance = 0;
+    if (this.keystrokeTimes.length >= 2) {
+      const intervals: number[] = [];
+      for (let i = 1; i < this.keystrokeTimes.length; i++) {
+        intervals.push(this.keystrokeTimes[i] - this.keystrokeTimes[i - 1]);
+      }
+      const mean = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+      keystrokeVariance = Math.sqrt(
+        intervals.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / intervals.length
+      );
+    }
+
+    return {
+      pageDwellMs: dwell,
+      mouseEvents: positions.length,
+      mouseDistance: Math.round(distance),
+      mouseAvgSpeed: Math.round(avgSpeed),
+      mouseMaxSpeed: Math.round(maxSpeed),
+      mouseLinearity: Math.round(linearity * 1000) / 1000,
+      keystrokes: this.keystrokeTimes.length,
+      keystrokeVariance: Math.round(keystrokeVariance * 100) / 100,
+      scrollEvents: this.scrollCount,
+      touchEvents: this.touchCount,
+      focusBlurCount: this.focusBlurCount,
+      copyPasteCount: this.copyPasteCount,
+      tabSwitches: this.tabSwitches,
+      timeToFirstInteractionMs: this.firstInteraction
+        ? Math.round(this.firstInteraction)
+        : null
+    };
+  }
+
+  stop() {
+    this.listeners.forEach(fn => fn());
+    this.listeners = [];
+  }
+}
+```
+
+---
+
+🪝 src/fingerprint/useFingerprint.ts
+
+```typescript
+import { useEffect, useState, useRef } from 'react';
+import { getFingerprint, CollectedFingerprint } from './FingerprintCollector';
+import { BehavioralTracker, BehavioralData } from './behavioralTracker';
+
+const VISITOR_ID_KEY = 'apz_visitor_id';
+
+function getOrCreateVisitorId(): string {
+  let id = localStorage.getItem(VISITOR_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(VISITOR_ID_KEY, id);
+  }
+  return id;
+}
+
+export function useFingerprint() {
+  const [fingerprint, setFingerprint] = useState<CollectedFingerprint | null>(null);
+  const [behavioral, setBehavioral] = useState<BehavioralData | null>(null);
+  const trackerRef = useRef<BehavioralTracker | null>(null);
+  const visitorIdRef = useRef<string>(getOrCreateVisitorId());
+
+  useEffect(() => {
+    getFingerprint().then(setFingerprint);
+
+    const tracker = new BehavioralTracker();
+    tracker.start();
+    trackerRef.current = tracker;
+
+    // هر ۲ ثانیه behavioral رو آپدیت کن
+    const interval = setInterval(() => {
+      setBehavioral(tracker.collect());
+    }, 2000);
+
+    // در unload نهایی یک‌بار دیگه
+    const onUnload = () => setBehavioral(tracker.collect());
+    window.addEventListener('beforeunload', onUnload);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('beforeunload', onUnload);
+      tracker.stop();
+    };
+  }, []);
+
+  return {
+    visitorId: visitorIdRef.current,
+    fingerprint,
+    behavioral,
+    /**
+     * درخواست API رو با fingerprint و behavioral همراه کن
+     */
+    wrapBody: (body: any = {}) => ({
+      ...body,
+      __visitorId: visitorIdRef.current,
+      __fp: fingerprint || {},
+      __behavior: trackerRef.current?.collect() || behavioral || {}
+    }),
+    /**
+     * هدرهای اضافی
+     */
+    headers: {
+      'X-Visitor-Id': visitorIdRef.current
+    }
+  };
+}
+```
+
+---
+
+🌐 به‌روزرسانی src/api/client.ts — اتصال خودکار
+
+```typescript
+// بالای فایل
+let __fingerprintProvider: (() => { __visitorId: string; __fp: any; __behavior: any }) | null = null;
+
+export function setFingerprintProvider(fn: typeof __fingerprintProvider) {
+  __fingerprintProvider = fn;
+}
+
+// داخل request:
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  let body = options.body;
+
+  // اگر body JSON هست، fingerprint رو inject کن
+  if (__fingerprintProvider && options.method && options.method !== 'GET' && body) {
+    try {
+      const parsed = JSON.parse(body as string);
+      const fp = __fingerprintProvider();
+      body = JSON.stringify({ ...parsed, ...fp });
+    } catch {}
+  }
+
+  const doFetch = async (): Promise<Response> =>
+    fetch(`${API_BASE}${path}`, {
+      ...options,
+      body,
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        ...(__fingerprintProvider ? { 'X-Visitor-Id': __fingerprintProvider().__visitorId } : {}),
+        ...options.headers
+      }
+    });
+
+  // ... بقیه مثل قبل
+}
+```
+
+در main.tsx:
+
+```tsx
+import { setFingerprintProvider } from './api/client';
+import { getFingerprint } from './fingerprint/FingerprintCollector';
+import { BehavioralTracker } from './fingerprint/behavioralTracker';
+
+// راه‌اندازی اولیه
+const visitorId = localStorage.getItem('apz_visitor_id') || crypto.randomUUID();
+localStorage.setItem('apz_visitor_id', visitorId);
+
+const tracker = new BehavioralTracker();
+tracker.start();
+
+let fpCache: any = null;
+getFingerprint().then(fp => { fpCache = fp; });
+
+setFingerprintProvider(() => ({
+  __visitorId: visitorId,
+  __fp: fpCache || {},
+  __behavior: tracker.collect()
+}));
+```
+
+---
+
+🖥️ کامپوننت src/components/BotChallengePage.tsx
+
+```tsx
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../api/client';
+
+interface Challenge {
+  id: string;
+  challenge: string;
+  difficulty: number;
+  expiresAt: number;
+}
+
+/**
+ * چالش Proof-of-Work ساده:
+ * کلاینت باید nonce پیدا کنه که SHA256(challenge + nonce) با N صفر شروع بشه.
+ * این کار برای انسان نامرئیه (چند صد میلی‌ثانیه) ولی برای bot هزینه‌بره.
+ */
+export const BotChallengePage: React.FC<{ onVerified: () => void }> = ({ onVerified }) => {
+  const [status, setStatus] = useState<'idle' | 'solving' | 'done' | 'error'>('idle');
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const solveChallenge = async () => {
+    setStatus('solving');
+    setProgress(0);
+    setError(null);
+
+    try {
+      // 1. دریافت challenge
+      const visitorId = localStorage.getItem('apz_visitor_id') || '';
+      const res = await fetch('/api/auth/challenge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitorId })
+      });
+      const data = await res.json();
+
+      if (!data.success || !data.data?.challenge) {
+        throw new Error('دریافت challenge ناموفق');
+      }
+
+      const { id, challenge, difficulty } = data.data;
+      const target = '0'.repeat(difficulty);
+
+      // 2. حل PoW با Web Worker (تا UI freeze نشه)
+      const nonce = await solvePow(challenge, target, (pct) => setProgress(pct));
+
+      // 3. ارسال جواب
+      const verifyRes = await fetch('/api/bot/verify-pow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitorId, challengeId: id, nonce })
+      });
+      const verifyData = await verifyRes.json();
+
+      if (!verifyData.success) {
+        throw new Error('تأیید ناموفق');
+      }
+
+      setStatus('done');
+      setTimeout(onVerified, 800);
+    } catch (err: any) {
+      setError(err.message);
+      setStatus('error');
+    }
+  };
+
+  useEffect(() => { solveChallenge(); }, []);
+
+  return (
+    <div className="bot-challenge-page">
+      <div className="bot-challenge-card">
+        <div className="bot-icon">🤖</div>
+        <h1>در حال بررسی…</h1>
+        <p>لطفاً چند لحظه صبر کن، در حال تأیید خودکار شما هستیم.</p>
+
+        {status === 'solving' && (
+          <div className="progress-bar">
+            <div className="progress-fill" style={{ width: `${progress}%` }} />
+            <span>{progress}%</span>
+          </div>
+        )}
+
+        {status === 'done' && (
+          <div className="success-msg">✅ تأیید شد! در حال انتقال…</div>
+        )}
+
+        {status === 'error' && (
+          <>
+            <div className="auth-error">⚠️ {error}</div>
+            <button className="btn-primary" onClick={solveChallenge}>
+              تلاش دوباره
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/**
+ * حل PoW با Web Worker درون‌خطی (بدون فایل جدا)
+ */
+function solvePow(
+  challenge: string,
+  target: string,
+  onProgress: (pct: number) => void
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const workerCode = `
+      self.onmessage = async (e) => {
+        const { challenge, target } = e.data;
+        let nonce = 0;
+        const t0 = Date.now();
+        const maxIterations = 50_000_000;
+
+        while (nonce < maxIterations) {
+          const buf = new TextEncoder().encode(challenge + nonce);
+          const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+          const hash = Array.from(new Uint8Array(hashBuf))
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+          
+          if (hash.startsWith(target)) {
+            self.postMessage({ done: true, nonce: String(nonce) });
+            return;
+          }
+          nonce++;
+          
+          // گزارش پیشرفت هر 1000 تلاش
+          if (nonce % 1000 === 0) {
+            self.postMessage({ progress: Math.min(95, nonce / 1000 / 100) });
+          }
+          
+          // timeout
+          if (Date.now() - t0 > 30000) {
+            self.postMessage({ done: false, error: 'timeout' });
+            return;
+          }
+        }
+        self.postMessage({ done: false, error: 'max_iterations' });
+      };
+    `;
+
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    const worker = new Worker(url);
+
+    worker.onmessage = (e) => {
+      if (e.data.progress) onProgress(Math.round(e.data.progress));
+      if (e.data.done) {
+        worker.terminate();
+        URL.revokeObjectURL(url);
+        resolve(e.data.nonce);
+      } else if (e.data.done === false) {
+        worker.terminate();
+        URL.revokeObjectURL(url);
+        reject(new Error(e.data.error));
+      }
+    };
+
+    worker.onerror = (err) => {
+      worker.terminate();
+      URL.revokeObjectURL(url);
+      reject(err);
+    };
+
+    worker.postMessage({ challenge, target });
+  });
+}
+```
+
+---
+
+🖥️ src/components/admin/BotDetectionPanel.tsx
+
+```tsx
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../../api/client';
+
+export const BotDetectionPanel: React.FC = () => {
+  const [stats, setStats] = useState<any>(null);
+  const [config, setConfig] = useState<any>(null);
+  const [fingerprints, setFingerprints] = useState<any[]>([]);
+  const [ja3, setJa3] = useState<any[]>([]);
+  const [filter, setFilter] = useState<'all' | 'bots' | 'high-risk'>('bots');
+
+  const load = async () => {
+    const [s, c, f, j] = await Promise.all([
+      apiClient.botStats(),
+      apiClient.botConfig(),
+      apiClient.botFingerprints(filter),
+      apiClient.botJa3()
+    ]);
+    setStats(s);
+    setConfig(c);
+    setFingerprints(f);
+    setJa3(j);
+  };
+
+  useEffect(() => { load(); }, [filter]);
+
+  const markVerified = async (visitorId: string) => {
+    if (!confirm('علامت‌گذاری به‌عنوان انسان تأییدشده؟')) return;
+    await apiClient.botVerifyFingerprint(visitorId);
+    load();
+  };
+
+  const getRiskColor = (level: string) => ({
+    low: '#10b981', medium: '#f59e0b', high: '#ef4444', critical: '#dc2626'
+  }[level] || '#6b7280');
+
+  return (
+    <div className="admin-panel">
+      <h2>🤖 تشخیص Bot و Fingerprint</h2>
+
+      {stats?.fingerprints && (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <span>کل Fingerprint</span>
+            <strong>{stats.fingerprints.total?.toLocaleString()}</strong>
+          </div>
+          <div className="stat-card red">
+            <span>Bots</span>
+            <strong>{stats.fingerprints.bots?.toLocaleString()}</strong>
+          </div>
+          <div className="stat-card green">
+            <span>تأییدشده</span>
+            <strong>{stats.fingerprints.verified?.toLocaleString()}</strong>
+          </div>
+          <div className="stat-card">
+            <span>نرخ انسان</span>
+            <strong>{stats.fingerprints.humanRate}%</strong>
+          </div>
+        </div>
+      )}
+
+      {/* ───── رویدادهای ۲۴ ساعت ───── */}
+      {stats?.events24h && stats.events24h.length > 0 && (
+        <>
+          <h3>رویدادهای ۲۴ ساعت گذشته</h3>
+          <div className="events-row">
+            {stats.events24h.map((e: any) => (
+              <div key={e.event_type} className={`event-chip ${e.event_type}`}>
+                <span>{e.event_type}</span>
+                <strong>{e.count}</strong>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ───── فیلتر ───── */}
+      <div className="filter-tabs">
+        {(['all', 'bots', 'high-risk'] as const).map(f => (
+          <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>
+            {f === 'all' ? 'همه' : f === 'bots' ? 'ربات‌ها' : 'ریسک بالا'}
+          </button>
+        ))}
+      </div>
+
+      {/* ───── جدول Fingerprints ───── */}
+      <h3>Fingerprints مشکوک</h3>
+      <table className="admin-table compact">
+        <thead>
+          <tr>
+            <th>Visitor ID</th>
+            <th>Risk</th>
+            <th>سطح</th>
+            <th>Bot</th>
+            <th>IPs</th>
+            <th>Reasons</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {fingerprints.map(fp => (
+            <tr key={fp.visitor_id}>
+              <td><code dir="ltr">{fp.visitor_id.slice(0, 16)}…</code></td>
+              <td><b style={{ color: getRiskColor(fp.risk_level) }}>{fp.risk_score}</b></td>
+              <td>
+                <span className="badge" style={{ background: getRiskColor(fp.risk_level) }}>
+                  {fp.risk_level}
+                </span>
+              </td>
+              <td>{fp.is_bot ? '🤖' : '👤'}</td>
+              <td>{JSON.parse(fp.associated_ips || '[]').length}</td>
+              <td className="flags-cell">
+                {(JSON.parse(fp.flags || '[]') as string[]).slice(0, 3).map((f, i) => (
+                  <span key={i} className="flag-chip">{f}</span>
+                ))}
+              </td>
+              <td>
+                {!fp.is_verified && (
+                  <button className="btn-icon-success" onClick={() => markVerified(fp.visitor_id)}>
+                    ✓
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* ───── JA3 ───── */}
+      <h3>JA3 TLS Fingerprints</h3>
+      <table className="admin-table compact">
+        <thead>
+          <tr>
+            <th>JA3 Hash</th>
+            <th>تعداد دفعات</th>
+            <th>IP های یکتا</th>
+            <th>وضعیت</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ja3.map(j => (
+            <tr key={j.ja3_hash}>
+              <td><code dir="ltr">{j.ja3_hash.slice(0, 16)}…</code></td>
+              <td>{j.seen_count}</td>
+              <td>{j.ip_count}</td>
+              <td>
+                {j.is_malicious ? (
+                  <span className="badge blacklist">🚫 Bad</span>
+                ) : (
+                  <span className="badge whitelist">✅ OK</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* ───── Risk Weights ───── */}
+      {config?.riskWeights && (
+        <>
+          <h3>وزن‌های Risk Score</h3>
+          <div className="risk-weights">
+            {Object.entries(config.riskWeights).map(([k, v]) => (
+              <div key={k} className="weight-item">
+                <span>{k}</span>
+                <strong>+{v as number}</strong>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+```
+
+---
+
+🌐 متدهای جدید src/api/client.ts
+
+```typescript
+// ───── Bot Detection (admin) ─────
+botStats: () =>
+  request<any>('/bot/stats'),
+
+botConfig: () =>
+  request<any>('/bot/config'),
+
+botFingerprints: (filter?: 'all' | 'bots' | 'high-risk') =>
+  request<any[]>(`/bot/fingerprints${filter ? `?filter=${filter}` : ''}`),
+
+botFingerprint: (visitorId: string) =>
+  request<any>(`/bot/fingerprint/${visitorId}`),
+
+botVerifyFingerprint: (visitorId: string) =>
+  request<{}>(`/bot/fingerprint/${visitorId}/verify`, { method: 'POST' }),
+
+botJa3: () =>
+  request<any[]>('/bot/ja3'),
+
+botMarkJa3Bad: (hash: string, notes?: string) =>
+  request<{}>(`/bot/ja3/${hash}/mark-bad`, {
+    method: 'POST',
+    body: JSON.stringify({ notes })
+  }),
+
+botClearCache: () =>
+  request<{}>('/bot/cache/clear', { method: 'POST' })
+```
+
+---
+
+🎨 استایل‌های اضافی
+
+```css
+/* ───── Bot Challenge Page ───── */
+.bot-challenge-page {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  background: #0a0b0f;
+  padding: 20px;
+}
+.bot-challenge-card {
+  max-width: 480px;
+  padding: 40px;
+  background: #14161c;
+  border: 1px solid #232733;
+  border-radius: 20px;
+  text-align: center;
+  direction: rtl;
+}
+.bot-icon { font-size: 4rem; margin-bottom: 16px; }
+.bot-challenge-card h1 { color: #e7e9ee; font-size: 1.4rem; margin-bottom: 12px; }
+.bot-challenge-card p { color: #a4acbd; margin-bottom: 24px; }
+
+.progress-bar {
+  position: relative;
+  height: 32px;
+  background: #0d0f14;
+  border-radius: 16px;
+  overflow: hidden;
+  margin: 20px 0;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6c7cff, #8a5cff);
+  transition: width 0.3s;
+}
+.progress-bar span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.success-msg {
+  padding: 14px;
+  background: #064e3b;
+  color: #34d399;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+/* ───── Bot Events ───── */
+.events-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.event-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: #0d0f14;
+  border-radius: 10px;
+  border: 1px solid #2a2f3d;
+}
+.event-chip span { color: #8a91a3; font-size: 0.85rem; text-transform: capitalize; }
+.event-chip strong { color: #6c7cff; font-size: 1.2rem; }
+.event-chip.detected strong { color: #f59e0b; }
+.event-chip.blocked strong { color: #ef4444; }
+.event-chip.verified strong { color: #10b981; }
+
+.flags-cell { max-width: 260px; }
+.flag-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  margin: 2px;
+  background: #3a1a1a;
+  color: #fca5a5;
+  border-radius: 10px;
+  font-size: 0.7rem;
+}
+
+.btn-icon-success {
+  background: none;
+  border: none;
+  color: #10b981;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.btn-icon-success:hover { background: #064e3b; }
+```
+
+---
+
+🚀 تنظیم nginx برای JA3 (اختیاری اما توصیه‌شده)
+
+```nginx
+# در http block:
+map $ssl_protocol $ssl_protocol_num {
+    "TLSv1.3" "772";
+    "TLSv1.2" "771";
+    "TLSv1.1" "770";
+    "TLSv1.0" "769";
+}
+
+# در server block:
+location / {
+    # JA3 hash از ماژول ngx_http_ssl_fingerprint
+    proxy_set_header X-JA3-Hash $http_x_ja3_hash;
+    proxy_set_header X-JA3-String $http_x_ja3_string;
+    # یا از Cloudflare:
+    proxy_set_header X-CF-JA3 $http_cf_ja3_hash;
+    
+    proxy_pass http://localhost:3001;
+}
+```
+
+💡 اگه از Cloudflare استفاده می‌کنی، JA3 به‌طور خودکار در هدر CF-JA3-Hash میاد (نیاز به پلن Enterprise).
+
+---
+
+🖥️ به‌روزرسانی server/index.ts
+
+```typescript
+import botRoutes from './routes/bot.routes.js';
+import { botDetectionGuard, attachBotProfile } from './middleware/botDetection.middleware.js';
+
+// بعد از vpnDetectionGuard:
+app.use('/api', attachBotProfile);
+
+// روت‌های ادمین
+app.use('/api/bot', botRoutes);
+
+// روی روت‌های حساس:
+app.use('/api/auth/login', botDetectionGuard);
+app.use('/api/auth/register', botDetectionGuard);
+```
+
+ترتیب نهایی لایه‌های امنیتی:
+
+```
+L1: ipAccessGuard          → IP whitelist/blacklist
+L2: geoBlockGuard          → Geo blocking
+L3: attachVpnProfile       → VPN detection
+L4: attachBotProfile       → Bot fingerprint attach   ← جدید
+L5: globalLimiter          → Rate limit
+L6: checkIpBan             → Brute-force ban
+L7: authSlowDown/authLimiter
+L8: botDetectionGuard      → Bot block/challenge      ← جدید
+L9: vpnDetectionGuard      → VPN block/challenge
+L10: authRoutes
+```
+
+---
+
+🧪 تست سریع
+
+```bash
+# ───── Lookup با UA ربات ─────
+curl -X POST http://localhost:3001/api/auth/login \
+  -H "User-Agent: python-requests/2.28.0" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@apz.io","password":"test"}'
+# → { code: "BOT_BLOCKED", riskScore: 50 }
+
+# ───── حل PoW ─────
+# 1. دریافت challenge از خطای BOT_CHALLENGE
+# 2. حل در JS:
+node -e "
+const crypto = require('crypto');
+const challenge = 'abc123';
+const difficulty = 4;
+const target = '0'.repeat(difficulty);
+let nonce = 0;
+while (true) {
+  const h = crypto.createHash('sha256').update(challenge + nonce).digest('hex');
+  if (h.startsWith(target)) { console.log('nonce:', nonce); break; }
+  nonce++;
+}
+"
+
+# ───── آمار ─────
+curl http://localhost:3001/api/bot/stats \
+  -H "Authorization: Bearer <ADMIN>" | jq
+```
+
+---
+
+✅ خلاصه ویژگی‌های اضافه‌شده
+
+ویژگی توضیح
+🎨 Canvas Fingerprint رندر متن با فونت‌های مختلف + hash
+🌐 WebGL Fingerprint Vendor + Renderer GPU
+🔊 Audio Fingerprint AudioContext + Oscillator
+🔤 Font Detection تشخیص فونت‌های نصب‌شده
+🖥️ Hardware Info Screen، CPU cores، RAM، Touch
+🖱️ Mouse Analysis Distance، Speed، Linearity
+⌨️ Keystroke Timing Variance بین فواصل فشار کلید
+📜 Scroll/Touch/Focus رخدادهای رفتاری
+🤖 Headless Detection webdriver، phantom، chrome obj
+🚫 UA Analysis 15+ الگوی bot شناخته‌شده
+🔐 JA3 TLS Fingerprint از طریق هدر Cloudflare/nginx
+📊 Risk Score (0-100) 30+ وزن قابل تنظیم
+🏆 Fingerprint Reputation کشف fingerprint مشترک بین IPها
+🎯 PoW Challenge اثبات انسانی بدون CAPTCHA مزاحم
+📝 Activity Log تمام رویدادها در DB
+🎨 Admin UI جدول fingerprints + JA3 + weights
+🔗 اتصال به Brute-force لاگ در suspicious_activity
+
+معماری نهایی امنیت:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Layer 1: IP Access Control (whitelist/blacklist)   │
+│  Layer 2: Geo Blocking (country/city/ASN)           │
+│  Layer 3: VPN/Proxy/Tor Detection                   │
+│  Layer 4: Bot Detection (fingerprint + behavior)    │ ← جدید
+│  Layer 5: Rate Limiting (global + per-route)        │
+│  Layer 6: Brute-force Protection (lockout + ban)    │
+│  Layer 7: Auth (Password + OAuth + 2FA)             │
+│  Layer 8: Security Headers (Helmet + CSP)           │
+└─────────────────────────────────────────────────────┘
+```
