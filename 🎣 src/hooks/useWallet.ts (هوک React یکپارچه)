@@ -1,0 +1,85 @@
+import { useState, useEffect, useCallback } from 'react';
+import { apiClient } from '../api/client';
+import { localStorageService } from '../wallet/LocalStorageService';
+import { Wallet, Transaction } from '../wallet/types';
+
+export function useWallet() {
+  const [wallet, setWallet] = useState<Wallet | null>(null);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [network, setNetwork] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  // بارگذاری اولیه از localStorage
+  useEffect(() => {
+    const saved = localStorageService.getWallet();
+    const txs = localStorageService.getTransactions();
+    if (saved) setWallet(saved);
+    if (txs.length) setTransactions(txs);
+
+    apiClient.getNetworkInfo().then(setNetwork).catch(console.error);
+  }, []);
+
+  // ذخیره خودکار
+  useEffect(() => {
+    if (wallet) localStorageService.saveWallet(wallet);
+  }, [wallet]);
+
+  useEffect(() => {
+    localStorageService.saveTransactions(transactions);
+  }, [transactions]);
+
+  const createWallet = useCallback(async () => {
+    setLoading(true);
+    try {
+      const created = await apiClient.createWallet();
+      const newWallet: Wallet = {
+        id: created.id,
+        address: created.address,
+        balance: 0,
+        currency: 'APZ',
+        publicKey: created.address
+      };
+      setWallet(newWallet);
+      return created;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const refreshBalance = useCallback(async () => {
+    if (!wallet) return;
+    const { balance } = await apiClient.getBalance(wallet.address);
+    setWallet(w => w ? { ...w, balance: Number(balance) } : w);
+  }, [wallet]);
+
+  const sendTransaction = useCallback(async (to: string, amount: string) => {
+    if (!wallet) throw new Error('No wallet');
+    const tx = await apiClient.sendTransaction({
+      walletId: wallet.id,
+      to,
+      amount
+    });
+    setTransactions(prev => [{
+      id: tx.id,
+      from: wallet.address,
+      to,
+      amount: Number(amount),
+      timestamp: Date.now(),
+      status: 'pending',
+      txHash: tx.hash
+    } as Transaction, ...prev]);
+
+    await refreshBalance();
+    return tx;
+  }, [wallet, refreshBalance]);
+
+  return {
+    wallet,
+    transactions,
+    network,
+    loading,
+    createWallet,
+    sendTransaction,
+    refreshBalance
+  };
+}
