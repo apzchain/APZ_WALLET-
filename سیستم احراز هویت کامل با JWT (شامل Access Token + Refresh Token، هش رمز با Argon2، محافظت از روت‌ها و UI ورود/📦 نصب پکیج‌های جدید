@@ -1,0 +1,2 @@
+npm install jsonwebtoken argon2 cookie-parser
+npm install -D @types/jsonwebtoken @types/cookie-parser
