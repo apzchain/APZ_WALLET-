@@ -1,4 +1,4 @@
-{
+gh repo clone apzchain/APZ_WALLET-{
   "image": "mcr.microsoft.com/devcontainers/universal:2",
   "features": {}
 }
