@@ -1,4 +1,3 @@
----
 
 ```markdown
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -244,7 +243,7 @@ Examples
 
 Good:
 
-```
+```text
 feat(explorer): add smart contract ABI viewer
 
 - Parse ABI from Sourcify
@@ -254,7 +253,7 @@ feat(explorer): add smart contract ABI viewer
 Closes #42
 ```
 
-```
+```text
 fix(rpc): prevent infinite retry loop on 502
 
 The retry logic didn't count attempts correctly when the server
@@ -277,7 +276,7 @@ Breaking Changes
 
 For breaking changes, add ! after type or include BREAKING CHANGE: in footer:
 
-```
+```text
 feat(api)!: change wallet initialization signature
 
 BREAKING CHANGE: `initWallet()` now requires a `network` parameter.
@@ -378,7 +377,7 @@ Rules:
 · ✅ readonly for immutable fields
 · ✅ No any — use unknown and narrow
 · ✅ Prefer interface over type for objects
-· ✅ Async/await over raw promises
+· ✅ async/await over raw promises
 
 🦀 Rust (Crypto)
 
@@ -649,7 +648,7 @@ PR Size Guidelines
 Size Lines Changed Review Time
 🟢 Small < 200 Fast review
 🟡 Medium 200–500 Standard review
-🔴 Large 500 Split recommended
+🔴 Large 500+ Split recommended
 
 Prefer small, focused PRs. One feature per PR.
 
@@ -799,7 +798,6 @@ Feature Request Guidelines
 How to Report
 
 Email: security@apzchain.org
-
 PGP Key: Download
 
 What to Include
@@ -996,176 +994,3 @@ For APZ Chain — A transparent, secure, and independent ecosystem.
 
 </div>
 ```
-
----
-
-📥 نحوه استفاده
-
-۱. ذخیره فایل
-
-```bash
-cd /path/to/APZ_WALLET
-nano CONTRIBUTING.md
-# محتوای بالا را کپی کنید و ذخیره کنید
-```
-
-۲. جایگزینی Placeholderها
-
-این مقادیر را با اطلاعات واقعی جایگزین کنید:
-
-Placeholder جایگزین با
-apzchain نام کاربری/سازمان GitHub شما
-APZ_WALLET نام واقعی مخزن
-conduct@apzchain.org ایمیل Code of Conduct
-security@apzchain.org ایمیل امنیتی
-hello@apzchain.org ایمیل عمومی
-https://discord.gg/apzchain لینک Discord
-https://t.me/apzchain کانال Telegram
-https://twitter.com/apzchain اکانت Twitter
-
-۳. ساخت فایل‌های مرتبط
-
-فایل CONTRIBUTING.md به این فایل‌ها ارجاع می‌دهد — آن‌ها را هم بسازید:
-
-```bash
-# Code of Conduct
-touch CODE_OF_CONDUCT.md
-
-# Issue templates
-mkdir -p .github/ISSUE_TEMPLATE
-touch .github/ISSUE_TEMPLATE/bug_report.md
-touch .github/ISSUE_TEMPLATE/feature_request.md
-
-# PR template
-touch .github/PULL_REQUEST_TEMPLATE.md
-```
-
-۴. اتصال به README
-
-در README.md، این خط را اضافه کنید:
-
-```markdown
-## 🤝 Contributing
-
-We welcome contributions! Please read our [Contributing Guide](CONTRIBUTING.md) before opening a PR.
-```
-
-۵. فعال‌سازی در GitHub
-
-GitHub به‌طور خودکار فایل CONTRIBUTING.md را در ریشه‌ی مخزن شناسایی می‌کند و:
-
-· ✅ لینک "Contributing" را در کنار دکمه‌ی "New Issue" نمایش می‌دهد
-· ✅ در هنگام باز کردن PR، لینک به آن را پیشنهاد می‌دهد
-· ✅ در Community Profile مخزن امتیاز می‌گیرد
-
-۶. کامیت و Push
-
-```bash
-git add CONTRIBUTING.md README.md
-git commit -m "docs: add comprehensive contributing guide"
-git push origin main
-```
-
----
-
-🎁 ویژگی‌های این CONTRIBUTING.md
-
-ویژگی توضیح
-✅ TOC خودکار فهرست مطالب با anchor links
-✅ ۱۰ روش مشارکت برای غیر-توسعه‌دهندگان هم
-✅ جدول Prerequisites با لینک دانلود
-✅ دستورات per-module برای هر بخش پروژه
-✅ Branch Naming ۱۰ prefix با مثال
-✅ Conventional Commits با ۱۱ type و مثال‌های خوب/بد
-✅ Code Style per Language Kotlin, TS, Rust, Go, CSS
-✅ Coverage Targets اهداف پوشش تست
-✅ PR Template کامل آماده استفاده
-✅ Review Guidelines هم برای reviewer هم author
-✅ Issue Templates Bug + Feature
-✅ Security Section با PGP
-✅ Translation Guide برای افزودن زبان جدید
-✅ Recognition با all-contributors
-✅ DCO رضایت ضمنی
-
----
-
-🔧 سفارشی‌سازی پیشرفته (اختیاری)
-
-افزودن فایل .github/PULL_REQUEST_TEMPLATE.md
-
-```markdown
-<!--
-  Thanks for submitting a PR! Please fill out this template.
-  See CONTRIBUTING.md for detailed guidelines.
--->
-
-## 📝 Description
-
-<!-- Brief description -->
-
-## 🎯 Motivation
-
-<!-- Why is this needed? -->
-
-Closes #
-
-## 🔧 Type of Change
-
-- [ ] 🐛 Bug fix
-- [ ] ✨ New feature
-- [ ] 💥 Breaking change
-- [ ] 📚 Documentation
-- [ ] 🎨 Style / refactor
-- [ ] ⚡ Performance
-- [ ] 🧪 Tests
-
-## ✅ Checklist
-
-- [ ] Code follows style guide
-- [ ] Tests added/passing
-- [ ] Documentation updated
-- [ ] No new warnings
-- [ ] Commits follow conventions
-```
-
-افزودن .github/ISSUE_TEMPLATE/bug_report.md
-
-```markdown
----
-name: 🐛 Bug Report
-about: Report a bug to help us improve
-title: '[BUG] '
-labels: ['bug', 'needs triage']
-assignees: ''
----
-
-## 🐛 Bug Description
-<!-- Clear description -->
-
-## 🔄 Steps to Reproduce
-1.
-2.
-3.
-
-## 🎯 Expected Behavior
-<!-- What should happen -->
-
-## 📸 Screenshots
-<!-- If applicable -->
-
-## 🌐 Environment
-- Platform:
-- Device:
-- Version:
-- Network:
-
-## 📋 Logs
-```
-
-```
-
-### فعال‌سازی DCO Bot
-
-برای اجبار امضای هر commit، [DCO GitHub App](https://github.com/apps/dco) را نصب کنید.
-
----
